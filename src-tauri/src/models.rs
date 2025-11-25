@@ -33,3 +33,40 @@ pub struct TagWithCount {
     pub children: Vec<TagWithCount>,
 }
 
+/// Result struct for similar atom search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimilarAtomResult {
+    #[serde(flatten)]
+    pub atom: AtomWithTags,
+    pub similarity_score: f32,
+    pub matching_chunk_content: String,
+    pub matching_chunk_index: i32,
+}
+
+/// Result struct for semantic search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticSearchResult {
+    #[serde(flatten)]
+    pub atom: AtomWithTags,
+    pub similarity_score: f32,
+    pub matching_chunk_content: String,
+    pub matching_chunk_index: i32,
+}
+
+/// Payload for embedding-complete event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingCompletePayload {
+    pub atom_id: String,
+    pub status: String, // "complete" or "failed"
+    pub error: Option<String>,
+}
+
+/// Chunk data for internal use
+#[derive(Debug, Clone)]
+pub struct ChunkData {
+    pub id: String,
+    pub atom_id: String,
+    pub chunk_index: i32,
+    pub content: String,
+}
+

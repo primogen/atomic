@@ -1,3 +1,4 @@
+mod chunking;
 mod commands;
 mod db;
 mod models;
