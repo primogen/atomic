@@ -189,6 +189,31 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_atom_tags_atom_id ON atom_tags(atom_id);
             CREATE INDEX IF NOT EXISTS idx_atom_tags_tag_id ON atom_tags(tag_id);
             CREATE INDEX IF NOT EXISTS idx_tags_parent_id ON tags(parent_id);
+
+            -- Wiki articles for tags
+            CREATE TABLE IF NOT EXISTS wiki_articles (
+              id TEXT PRIMARY KEY,
+              tag_id TEXT UNIQUE REFERENCES tags(id) ON DELETE CASCADE,
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              atom_count INTEGER NOT NULL
+            );
+
+            -- Citations linking article content to source atoms/chunks
+            CREATE TABLE IF NOT EXISTS wiki_citations (
+              id TEXT PRIMARY KEY,
+              wiki_article_id TEXT REFERENCES wiki_articles(id) ON DELETE CASCADE,
+              citation_index INTEGER NOT NULL,
+              atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
+              chunk_index INTEGER,
+              excerpt TEXT NOT NULL
+            );
+
+            -- Indexes for wiki tables
+            CREATE INDEX IF NOT EXISTS idx_wiki_articles_tag ON wiki_articles(tag_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_citations_article ON wiki_citations(wiki_article_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_citations_atom ON wiki_citations(atom_id);
             "#,
         )
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
