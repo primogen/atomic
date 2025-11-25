@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { AtomEditor } from '../atoms/AtomEditor';
 import { AtomViewer } from '../atoms/AtomViewer';
+import { WikiViewer } from '../wiki/WikiViewer';
 import { useUIStore } from '../../stores/ui';
 import { useAtomsStore } from '../../stores/atoms';
 import { useClickOutside } from '../../hooks/useClickOutside';
@@ -11,7 +12,7 @@ export function RightDrawer() {
   const { atoms } = useAtomsStore();
   const drawerRef = useRef<HTMLDivElement>(null);
 
-  const { isOpen, mode, atomId } = drawerState;
+  const { isOpen, mode, atomId, tagId, tagName } = drawerState;
   const atom = atomId ? atoms.find((a) => a.id === atomId) : null;
 
   // Close on click outside
@@ -52,26 +53,14 @@ export function RightDrawer() {
         }
         return <AtomViewer atom={atom} onClose={closeDrawer} onEdit={handleEdit} />;
       case 'wiki':
-        return (
-          <div className="flex flex-col h-full">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#3d3d3d]">
-              <h2 className="text-lg font-semibold text-[#dcddde]">Wiki</h2>
-              <button
-                onClick={closeDrawer}
-                className="text-[#888888] hover:text-[#dcddde] transition-colors"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+        if (!tagId || !tagName) {
+          return (
+            <div className="flex items-center justify-center h-full text-[#888888]">
+              No tag selected
             </div>
-            <div className="flex-1 flex items-center justify-center text-[#888888]">
-              <p className="text-center px-6">
-                Wiki articles will appear here in a future update.
-              </p>
-            </div>
-          </div>
-        );
+          );
+        }
+        return <WikiViewer tagId={tagId} tagName={tagName} />;
       default:
         return null;
     }
