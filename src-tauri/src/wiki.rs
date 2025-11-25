@@ -85,6 +85,227 @@ Guidelines:
 - Every new factual claim MUST have a citation
 - Keep tone consistent with the existing article"#;
 
+/// Data needed for wiki article generation (extracted before async call)
+pub struct WikiGenerationInput {
+    pub chunks: Vec<ChunkWithContext>,
+    pub atom_count: i32,
+    pub tag_id: String,
+    pub tag_name: String,
+}
+
+/// Data needed for wiki article update (extracted before async call)
+pub struct WikiUpdateInput {
+    pub new_chunks: Vec<ChunkWithContext>,
+    pub existing_article: WikiArticle,
+    pub existing_citations: Vec<WikiCitation>,
+    pub atom_count: i32,
+    pub tag_id: String,
+    pub tag_name: String,
+}
+
+/// Prepare data for wiki article generation (sync, needs db connection)
+pub fn prepare_wiki_generation(
+    conn: &Connection,
+    tag_id: &str,
+    tag_name: &str,
+) -> Result<WikiGenerationInput, String> {
+    let chunks = get_relevant_chunks_for_article(conn, tag_id, tag_name, 30, 0.3)?;
+    
+    if chunks.is_empty() {
+        return Err("No content found for this tag".to_string());
+    }
+
+    let atom_count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
+            [tag_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to count atoms: {}", e))?;
+
+    Ok(WikiGenerationInput {
+        chunks,
+        atom_count,
+        tag_id: tag_id.to_string(),
+        tag_name: tag_name.to_string(),
+    })
+}
+
+/// Prepare data for wiki article update (sync, needs db connection)
+pub fn prepare_wiki_update(
+    conn: &Connection,
+    tag_id: &str,
+    tag_name: &str,
+    existing_article: &WikiArticle,
+    existing_citations: &[WikiCitation],
+) -> Result<Option<WikiUpdateInput>, String> {
+    let last_update = &existing_article.updated_at;
+
+    // Get atoms added after the last update
+    let mut new_atom_stmt = conn
+        .prepare(
+            "SELECT DISTINCT a.id FROM atoms a
+             INNER JOIN atom_tags at ON a.id = at.atom_id
+             WHERE at.tag_id = ?1 AND a.created_at > ?2"
+        )
+        .map_err(|e| format!("Failed to prepare new atoms query: {}", e))?;
+
+    let new_atom_ids: Vec<String> = new_atom_stmt
+        .query_map(rusqlite::params![tag_id, last_update], |row| row.get(0))
+        .map_err(|e| format!("Failed to query new atoms: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect new atom IDs: {}", e))?;
+
+    if new_atom_ids.is_empty() {
+        return Ok(None); // No new atoms
+    }
+
+    // Get chunks from new atoms only
+    let placeholders: String = new_atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT id, atom_id, chunk_index, content FROM atom_chunks WHERE atom_id IN ({})",
+        placeholders
+    );
+    
+    let mut chunk_stmt = conn
+        .prepare(&query)
+        .map_err(|e| format!("Failed to prepare chunk query: {}", e))?;
+    
+    let new_chunks: Vec<ChunkWithContext> = chunk_stmt
+        .query_map(rusqlite::params_from_iter(new_atom_ids.iter()), |row| {
+            Ok(ChunkWithContext {
+                atom_id: row.get(1)?,
+                chunk_index: row.get(2)?,
+                content: row.get(3)?,
+                similarity_score: 1.0,
+            })
+        })
+        .map_err(|e| format!("Failed to query new chunks: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect new chunks: {}", e))?;
+
+    if new_chunks.is_empty() {
+        return Ok(None);
+    }
+
+    let atom_count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
+            [tag_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to count atoms: {}", e))?;
+
+    Ok(Some(WikiUpdateInput {
+        new_chunks,
+        existing_article: existing_article.clone(),
+        existing_citations: existing_citations.to_vec(),
+        atom_count,
+        tag_id: tag_id.to_string(),
+        tag_name: tag_name.to_string(),
+    }))
+}
+
+/// Generate wiki article content via API (async, no db needed)
+pub async fn generate_wiki_content(
+    client: &Client,
+    api_key: &str,
+    input: &WikiGenerationInput,
+) -> Result<WikiArticleWithCitations, String> {
+    // Build source materials for prompt
+    let mut source_materials = String::new();
+    for (i, chunk) in input.chunks.iter().enumerate() {
+        source_materials.push_str(&format!("[{}] {}\n\n", i + 1, chunk.content));
+    }
+
+    let user_content = format!(
+        "Write a wiki article about \"{}\".\n\nSOURCE MATERIALS:\n{}\nWrite the article now, citing sources with [N] notation.",
+        input.tag_name,
+        source_materials
+    );
+
+    // Call OpenRouter API
+    let result = call_openrouter_for_wiki(client, api_key, WIKI_GENERATION_SYSTEM_PROMPT, &user_content).await?;
+
+    // Create article
+    let article_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    let article = WikiArticle {
+        id: article_id.clone(),
+        tag_id: input.tag_id.clone(),
+        content: result.article_content.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+        atom_count: input.atom_count,
+    };
+
+    // Extract citations from the article content
+    let citations = extract_citations(&article_id, &result.article_content, &input.chunks)?;
+
+    Ok(WikiArticleWithCitations { article, citations })
+}
+
+/// Update wiki article content via API (async, no db needed)
+pub async fn update_wiki_content(
+    client: &Client,
+    api_key: &str,
+    input: &WikiUpdateInput,
+) -> Result<WikiArticleWithCitations, String> {
+    // Build existing sources section
+    let mut existing_sources = String::new();
+    for citation in &input.existing_citations {
+        existing_sources.push_str(&format!("[{}] {}\n\n", citation.citation_index, citation.excerpt));
+    }
+
+    // Build new sources section (continuing numbering)
+    let start_index = input.existing_citations.len() as i32 + 1;
+    let mut new_sources = String::new();
+    for (i, chunk) in input.new_chunks.iter().enumerate() {
+        new_sources.push_str(&format!("[{}] {}\n\n", start_index + i as i32, chunk.content));
+    }
+
+    let user_content = format!(
+        "CURRENT ARTICLE:\n{}\n\nEXISTING SOURCES (already cited as [1] through [{}]):\n{}\nNEW SOURCES TO INCORPORATE (cite as [{}] onwards):\n{}\nUpdate the article to incorporate the new information.",
+        input.existing_article.content,
+        input.existing_citations.len(),
+        existing_sources,
+        start_index,
+        new_sources
+    );
+
+    // Call OpenRouter API
+    let result = call_openrouter_for_wiki(client, api_key, WIKI_UPDATE_SYSTEM_PROMPT, &user_content).await?;
+
+    // Create updated article
+    let now = Utc::now().to_rfc3339();
+    let article = WikiArticle {
+        id: input.existing_article.id.clone(),
+        tag_id: input.tag_id.clone(),
+        content: result.article_content.clone(),
+        created_at: input.existing_article.created_at.clone(),
+        updated_at: now,
+        atom_count: input.atom_count,
+    };
+
+    // Extract all citations from the updated content
+    // Combine existing chunks with new chunks for citation mapping
+    let mut all_chunks: Vec<ChunkWithContext> = input.existing_citations
+        .iter()
+        .map(|c| ChunkWithContext {
+            atom_id: c.atom_id.clone(),
+            chunk_index: c.chunk_index.unwrap_or(0),
+            content: c.excerpt.clone(),
+            similarity_score: 1.0,
+        })
+        .collect();
+    all_chunks.extend(input.new_chunks.clone());
+
+    let citations = extract_citations(&article.id, &result.article_content, &all_chunks)?;
+
+    Ok(WikiArticleWithCitations { article, citations })
+}
+
 /// Get relevant chunks for wiki article generation
 /// Uses embedding similarity to rank chunks by relevance to the tag name
 pub fn get_relevant_chunks_for_article(

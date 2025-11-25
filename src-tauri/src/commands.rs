@@ -783,3 +783,118 @@ pub async fn test_openrouter_connection(api_key: String) -> Result<bool, String>
     }
 }
 
+// Wiki commands
+
+use crate::wiki;
+
+/// Get a wiki article for a tag (if it exists)
+#[tauri::command]
+pub fn get_wiki_article(
+    db: State<Database>,
+    tag_id: String,
+) -> Result<Option<crate::models::WikiArticleWithCitations>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    wiki::load_wiki_article(&conn, &tag_id)
+}
+
+/// Get the status of a wiki article for a tag
+#[tauri::command]
+pub fn get_wiki_article_status(
+    db: State<Database>,
+    tag_id: String,
+) -> Result<crate::models::WikiArticleStatus, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    wiki::get_article_status(&conn, &tag_id)
+}
+
+/// Generate a new wiki article for a tag
+#[tauri::command]
+pub async fn generate_wiki_article(
+    db: State<'_, Database>,
+    tag_id: String,
+    tag_name: String,
+) -> Result<crate::models::WikiArticleWithCitations, String> {
+    // Get settings and prepare data (sync, with db lock)
+    let (api_key, input) = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let settings_map = settings::get_all_settings(&conn)?;
+        let api_key = settings_map.get("openrouter_api_key").cloned();
+        let input = wiki::prepare_wiki_generation(&conn, &tag_id, &tag_name)?;
+        (api_key, input)
+    };
+    // Lock released here
+
+    let api_key = api_key.ok_or("OpenRouter API key not configured. Please set it in Settings.")?;
+
+    // Generate article via API (async, no db lock needed)
+    let client = reqwest::Client::new();
+    let result = wiki::generate_wiki_content(&client, &api_key, &input).await?;
+
+    // Save to database (sync, with db lock)
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        wiki::save_wiki_article(&conn, &result.article, &result.citations)?;
+    }
+
+    Ok(result)
+}
+
+/// Update an existing wiki article with new atoms
+#[tauri::command]
+pub async fn update_wiki_article(
+    db: State<'_, Database>,
+    tag_id: String,
+    tag_name: String,
+) -> Result<crate::models::WikiArticleWithCitations, String> {
+    // Get settings, existing article, and prepare update data (sync, with db lock)
+    let (api_key, existing, update_input) = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let settings_map = settings::get_all_settings(&conn)?;
+        let api_key = settings_map.get("openrouter_api_key").cloned();
+        let existing = wiki::load_wiki_article(&conn, &tag_id)?;
+        
+        let update_input = if let Some(ref ex) = existing {
+            wiki::prepare_wiki_update(&conn, &tag_id, &tag_name, &ex.article, &ex.citations)?
+        } else {
+            None
+        };
+        
+        (api_key, existing, update_input)
+    };
+    // Lock released here
+
+    let api_key = api_key.ok_or("OpenRouter API key not configured. Please set it in Settings.")?;
+    let existing = existing.ok_or("No existing article to update")?;
+
+    // Check if there are new atoms to incorporate
+    let input = match update_input {
+        Some(input) => input,
+        None => {
+            // No new atoms, return existing article unchanged
+            return Ok(existing);
+        }
+    };
+
+    // Update article via API (async, no db lock needed)
+    let client = reqwest::Client::new();
+    let result = wiki::update_wiki_content(&client, &api_key, &input).await?;
+
+    // Save to database (sync, with db lock)
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        wiki::save_wiki_article(&conn, &result.article, &result.citations)?;
+    }
+
+    Ok(result)
+}
+
+/// Delete a wiki article for a tag
+#[tauri::command]
+pub fn delete_wiki_article(
+    db: State<Database>,
+    tag_id: String,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    wiki::delete_article(&conn, &tag_id)
+}
+

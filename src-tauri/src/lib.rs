@@ -66,6 +66,11 @@ pub fn run() {
             commands::get_settings,
             commands::set_setting,
             commands::test_openrouter_connection,
+            commands::get_wiki_article,
+            commands::get_wiki_article_status,
+            commands::generate_wiki_article,
+            commands::update_wiki_article,
+            commands::delete_wiki_article,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
