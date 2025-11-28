@@ -3,6 +3,8 @@ use rusqlite::Connection;
 use sqlite_vec::sqlite3_vec_init;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use chrono;
+use uuid;
 
 pub struct Database {
     pub conn: Mutex<Connection>,
@@ -151,7 +153,8 @@ impl Database {
                 content TEXT NOT NULL,
                 source_url TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                embedding_status TEXT DEFAULT 'pending'
             );
 
             -- Hierarchical tags
@@ -192,7 +195,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_tags_parent_id ON tags(parent_id);
             CREATE INDEX IF NOT EXISTS idx_tags_name_nocase ON tags(name COLLATE NOCASE);
             CREATE INDEX IF NOT EXISTS idx_atoms_updated_at ON atoms(updated_at);
-            CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status);
             CREATE INDEX IF NOT EXISTS idx_atom_chunks_composite ON atom_chunks(atom_id, chunk_index);
 
             -- Wiki articles for tags
@@ -239,6 +241,9 @@ impl Database {
         // Create vec_chunks virtual table for sqlite-vec similarity search
         Self::create_vec_chunks_table(conn)?;
 
+        // Insert default top-level tags if they don't exist
+        Self::insert_default_tags(conn)?;
+
         Ok(())
     }
 
@@ -258,6 +263,13 @@ impl Database {
             .map_err(|e| format!("Failed to add embedding_status column: {}", e))?;
         }
 
+        // Create index for embedding_status (safe to run even if it exists)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_atoms_embedding_status ON atoms(embedding_status)",
+            [],
+        )
+        .map_err(|e| format!("Failed to create embedding_status index: {}", e))?;
+
         Ok(())
     }
 
@@ -273,6 +285,34 @@ impl Database {
             [],
         )
         .map_err(|e| format!("Failed to create vec_chunks table: {}", e))?;
+
+        Ok(())
+    }
+
+    fn insert_default_tags(conn: &Connection) -> Result<(), String> {
+        // Default top-level tags to guide the LLM when creating new tags
+        let default_tags = vec!["People", "Concepts", "Places", "Organizations"];
+        let now = chrono::Utc::now().to_rfc3339();
+
+        for tag_name in default_tags {
+            // Check if tag already exists
+            let exists: bool = conn
+                .prepare("SELECT 1 FROM tags WHERE name = ?1 COLLATE NOCASE")
+                .map_err(|e| format!("Failed to prepare tag check: {}", e))?
+                .exists([tag_name])
+                .map_err(|e| format!("Failed to check tag existence: {}", e))?;
+
+            if !exists {
+                // Generate a simple UUID-like ID for the tag
+                let tag_id = uuid::Uuid::new_v4().to_string();
+
+                conn.execute(
+                    "INSERT INTO tags (id, name, parent_id, created_at) VALUES (?1, ?2, NULL, ?3)",
+                    [&tag_id, tag_name, &now],
+                )
+                .map_err(|e| format!("Failed to insert default tag '{}': {}", tag_name, e))?;
+            }
+        }
 
         Ok(())
     }
