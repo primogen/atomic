@@ -626,7 +626,7 @@ pub async fn search_atoms_semantic(
     let embeddings = crate::embedding::generate_openrouter_embeddings_public(
         &client,
         &api_key,
-        &vec![query.clone()],
+        &[query.clone()],
     )
     .await
     .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
@@ -755,7 +755,7 @@ pub async fn search_atoms_semantic_impl(
     let embeddings = crate::embedding::generate_openrouter_embeddings_public(
         &client,
         &api_key,
-        &vec![query.to_string()],
+        &[query.to_string()],
     )
     .await
     .map_err(|e| format!("Failed to generate query embedding: {}", e))?;

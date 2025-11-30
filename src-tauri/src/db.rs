@@ -3,8 +3,6 @@ use rusqlite::Connection;
 use sqlite_vec::sqlite3_vec_init;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use chrono;
-use uuid;
 
 pub struct Database {
     pub conn: Mutex<Connection>,

@@ -480,7 +480,7 @@ async fn run_agent_loop(
                     "search_atoms" => {
                         let query = tool_args["query"].as_str().unwrap_or("");
                         let limit = tool_args["limit"].as_i64().unwrap_or(5) as i32;
-                        match execute_search_atoms(&*db, query, limit, &ctx.scope_tag_ids).await {
+                        match execute_search_atoms(&db, query, limit, &ctx.scope_tag_ids).await {
                             Ok(results) => {
                                 let count = results.len() as i32;
                                 // Store citation info
@@ -512,7 +512,7 @@ async fn run_agent_loop(
                     }
                     "get_atom" => {
                         let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
-                        match execute_get_atom(&*db, atom_id) {
+                        match execute_get_atom(&db, atom_id) {
                             Ok(Some(content)) => (content, 1),
                             Ok(None) => ("Atom not found".to_string(), 0),
                             Err(e) => (format!("Error: {}", e), 0),

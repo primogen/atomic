@@ -116,7 +116,7 @@ pub async fn prepare_wiki_generation(
     let embeddings = crate::embedding::generate_openrouter_embeddings_public(
         &client,
         api_key,
-        &vec![tag_name.to_string()],
+        &[tag_name.to_string()],
     )
     .await
     .map_err(|e| format!("Failed to generate tag embedding: {}", e))?;
@@ -473,7 +473,7 @@ pub async fn generate_wiki_article(
     let embeddings = crate::embedding::generate_openrouter_embeddings_public(
         client,
         api_key,
-        &vec![tag_name.to_string()],
+        &[tag_name.to_string()],
     )
     .await
     .map_err(|e| format!("Failed to generate tag embedding: {}", e))?;

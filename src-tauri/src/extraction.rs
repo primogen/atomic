@@ -185,7 +185,7 @@ pub async fn extract_tags_from_chunk(
             json_schema: JsonSchemaWrapper {
                 name: "extraction_result".to_string(),
                 strict: true,
-                schema: schema,
+                schema,
             },
         },
         temperature: 0.1,
@@ -449,13 +449,12 @@ pub fn get_or_create_tag(
     }
 
     // Try to find existing tag
-    if let Some(existing_id) = conn
+    if let Ok(existing_id) = conn
         .query_row(
             "SELECT id FROM tags WHERE LOWER(name) = LOWER(?1)",
             [trimmed_name],
             |row| row.get(0),
         )
-        .ok()
     {
         return Ok(existing_id);
     }
@@ -626,7 +625,7 @@ pub async fn consolidate_atom_tags(
             json_schema: JsonSchemaWrapper {
                 name: "consolidation_result".to_string(),
                 strict: true,
-                schema: schema,
+                schema,
             },
         },
         temperature: 0.1,
