@@ -14,7 +14,7 @@ export function MainView() {
     semanticSearchQuery,
     retryEmbedding,
   } = useAtomsStore();
-  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer } = useUIStore();
+  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer, highlightedAtomId, setHighlightedAtom } = useUIStore();
 
   // Determine what to display
   const displayAtoms = useMemo(() => {
@@ -178,7 +178,9 @@ export function MainView() {
             atoms={atoms}
             selectedTagId={selectedTagId}
             searchResultIds={searchResultIds}
+            highlightedAtomId={highlightedAtomId}
             onAtomClick={handleAtomClick}
+            onHighlightClear={() => setHighlightedAtom(null)}
           />
         ) : viewMode === 'grid' ? (
           <div className="h-full overflow-y-auto">

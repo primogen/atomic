@@ -220,4 +220,53 @@ pub struct ChatCitation {
     pub relevance_score: Option<f32>,
 }
 
+// ==================== Semantic Graph Types ====================
+
+/// Pre-computed semantic edge between two atoms
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticEdge {
+    pub id: String,
+    pub source_atom_id: String,
+    pub target_atom_id: String,
+    pub similarity_score: f32,
+    pub source_chunk_index: Option<i32>,
+    pub target_chunk_index: Option<i32>,
+    pub created_at: String,
+}
+
+/// Neighborhood graph for local graph view
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborhoodGraph {
+    pub center_atom_id: String,
+    pub atoms: Vec<NeighborhoodAtom>,
+    pub edges: Vec<NeighborhoodEdge>,
+}
+
+/// Atom in a neighborhood graph with depth info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborhoodAtom {
+    #[serde(flatten)]
+    pub atom: AtomWithTags,
+    pub depth: i32, // 0 = center, 1 = direct connection, 2 = friend-of-friend
+}
+
+/// Edge in a neighborhood graph (combines tag and semantic connections)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborhoodEdge {
+    pub source_id: String,
+    pub target_id: String,
+    pub edge_type: String, // "tag", "semantic", "both"
+    pub strength: f32,     // Combined strength (0-1)
+    pub shared_tag_count: i32,
+    pub similarity_score: Option<f32>,
+}
+
+/// Atom cluster assignment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtomCluster {
+    pub cluster_id: i32,
+    pub atom_ids: Vec<String>,
+    pub dominant_tags: Vec<String>,
+}
+
 
