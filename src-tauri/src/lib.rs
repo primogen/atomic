@@ -8,6 +8,7 @@ mod embedding;
 mod extraction;
 mod http_server;
 mod models;
+mod providers;
 mod settings;
 mod wiki;
 
@@ -78,11 +79,14 @@ pub fn run() {
             commands::find_similar_atoms,
             commands::search_atoms_semantic,
             commands::retry_embedding,
+            commands::reset_stuck_processing,
             commands::process_pending_embeddings,
+            commands::process_pending_tagging,
             commands::get_embedding_status,
             commands::get_settings,
             commands::set_setting,
             commands::test_openrouter_connection,
+            commands::get_available_llm_models,
             commands::get_wiki_article,
             commands::get_wiki_article_status,
             commands::generate_wiki_article,
@@ -99,6 +103,13 @@ pub fn run() {
             commands::compute_clusters,
             commands::get_clusters,
             commands::get_connection_counts,
+            // Ollama commands
+            commands::test_ollama,
+            commands::get_ollama_models,
+            commands::get_ollama_embedding_models_cmd,
+            commands::get_ollama_llm_models_cmd,
+            // Setup command
+            commands::verify_provider_configured,
             // Chat commands
             chat::create_conversation,
             chat::get_conversations,

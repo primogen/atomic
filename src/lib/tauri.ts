@@ -31,9 +31,19 @@ export async function retryEmbedding(atomId: string): Promise<void> {
   return invoke('retry_embedding', { atomId });
 }
 
+// Reset atoms stuck in 'processing' state (call on app startup)
+export async function resetStuckProcessing(): Promise<number> {
+  return invoke('reset_stuck_processing');
+}
+
 // Process pending embeddings
 export async function processPendingEmbeddings(): Promise<number> {
   return invoke('process_pending_embeddings');
+}
+
+// Process pending tagging (for atoms with completed embeddings)
+export async function processPendingTagging(): Promise<number> {
+  return invoke('process_pending_tagging');
 }
 
 // Get embedding status
@@ -177,5 +187,44 @@ export async function getConnectionCounts(
   minSimilarity: number = 0.5
 ): Promise<Record<string, number>> {
   return invoke('get_connection_counts', { minSimilarity });
+}
+
+// Model discovery types and commands
+export interface AvailableModel {
+  id: string;
+  name: string;
+}
+
+export async function getAvailableLlmModels(): Promise<AvailableModel[]> {
+  return invoke('get_available_llm_models');
+}
+
+// Ollama types and commands
+export interface OllamaModel {
+  id: string;
+  name: string;
+  is_embedding: boolean;
+  embedding_dimension: number | null;
+}
+
+export async function testOllamaConnection(host: string): Promise<boolean> {
+  return invoke('test_ollama', { host });
+}
+
+export async function getOllamaModels(host: string): Promise<OllamaModel[]> {
+  return invoke('get_ollama_models', { host });
+}
+
+export async function getOllamaEmbeddingModels(host: string): Promise<AvailableModel[]> {
+  return invoke('get_ollama_embedding_models_cmd', { host });
+}
+
+export async function getOllamaLlmModels(host: string): Promise<AvailableModel[]> {
+  return invoke('get_ollama_llm_models_cmd', { host });
+}
+
+// Setup verification
+export async function verifyProviderConfigured(): Promise<boolean> {
+  return invoke('verify_provider_configured');
 }
 

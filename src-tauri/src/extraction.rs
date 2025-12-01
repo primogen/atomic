@@ -1,57 +1,8 @@
-use reqwest::Client;
+use crate::providers::traits::LlmConfig;
+use crate::providers::types::{GenerationParams, Message, StructuredOutputSchema};
+use crate::providers::{create_llm_provider, ProviderConfig};
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-
-// OpenRouter API request/response types
-#[derive(Serialize)]
-struct OpenRouterRequest {
-    model: String,
-    messages: Vec<Message>,
-    response_format: ResponseFormat,
-    temperature: f32,
-    max_tokens: u32,
-    provider: ProviderPreferences,
-}
-
-#[derive(Serialize)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-#[derive(Serialize)]
-struct ResponseFormat {
-    #[serde(rename = "type")]
-    format_type: String,
-    json_schema: JsonSchemaWrapper,
-}
-
-#[derive(Serialize)]
-struct JsonSchemaWrapper {
-    name: String,
-    strict: bool,
-    schema: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct ProviderPreferences {
-    require_parameters: bool,
-}
-
-#[derive(Deserialize)]
-struct OpenRouterResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: MessageContent,
-}
-
-#[derive(Deserialize)]
-struct MessageContent {
-    content: Option<String>,
-}
+use serde::Deserialize;
 
 // Extraction result types
 #[derive(Debug, Clone, Deserialize)]
@@ -80,7 +31,6 @@ pub struct TagLookupResult {
 const TAG_CONSOLIDATION_PROMPT: &str = r#"You are reviewing tags applied to a complete document to consolidate overly specific tags into broader ones.
 
 IMPORTANT - TAG IDENTIFICATION:
-- Each tag is shown by its name only (e.g., "AI Consciousness")
 - Tag names are case-insensitive
 - Each tag name is globally unique across the entire system
 - When removing tags, use the exact tag name as shown
@@ -106,9 +56,10 @@ const SYSTEM_PROMPT: &str = r#"You are a knowledge management assistant that cat
 
 IMPORTANT:
 - Return ALL tags that apply to this text
-- Each tag has a name and optional parent_name
+- Each tag has a name and optional parent_name. 
 - Tag names are case-insensitive and globally unique
 - Use existing tags from the hierarchy when applicable
+- Always prefer adding specific tags to existing categories rather than adding them as top-level tags.
 
 HIERARCHY STRUCTURE:
 - Level 1: Categories (e.g., "Topics", "People", "Locations", "Organizations", "Events")
@@ -123,16 +74,16 @@ EXAMPLES:
 Guidelines:
 - Use existing tags from the provided hierarchy when possible
 - Create new tags only when needed
-- Be specific but not overly granular
+- Prefer broad tags like "John Smith" rather than overly specific tags such as "Early Life of John Smith"
 - Only include tags you're confident are relevant"#;
 
-/// Extract tags from a single chunk using OpenRouter API
+/// Extract tags from a single chunk using LLM provider
 pub async fn extract_tags_from_chunk(
-    client: &Client,
-    api_key: &str,
+    provider_config: &ProviderConfig,
     chunk_content: &str,
     tag_tree_json: &str,
     model: &str,
+    supported_params: Option<Vec<String>>,
 ) -> Result<ExtractionResult, String> {
     let user_content = format!(
         "EXISTING TAG HIERARCHY:\n{}\n\nTEXT TO ANALYZE:\n{}",
@@ -167,32 +118,24 @@ pub async fn extract_tags_from_chunk(
         "additionalProperties": false
     });
 
-    let request = OpenRouterRequest {
-        model: model.to_string(),
-        messages: vec![
-            Message {
-                role: "system".to_string(),
-                content: SYSTEM_PROMPT.to_string(),
-            },
-            Message {
-                role: "user".to_string(),
-                content: user_content,
-            },
-        ],
-        response_format: ResponseFormat {
-            format_type: "json_schema".to_string(),
-            json_schema: JsonSchemaWrapper {
-                name: "extraction_result".to_string(),
-                strict: true,
-                schema,
-            },
-        },
-        temperature: 0.1,
-        max_tokens: 1000,
-        provider: ProviderPreferences {
-            require_parameters: true,
-        },
-    };
+    let messages = vec![
+        Message::system(SYSTEM_PROMPT),
+        Message::user(user_content),
+    ];
+
+    let mut params = GenerationParams::new()
+        .with_temperature(0.1)
+        .with_structured_output(StructuredOutputSchema::new("extraction_result", schema))
+        .with_minimize_reasoning(true); // Speed up reasoning models for simple tag extraction
+
+    if let Some(supported) = supported_params {
+        params = params.with_supported_parameters(supported);
+    }
+
+    let llm_config = LlmConfig::new(model).with_params(params);
+
+    let provider = create_llm_provider(provider_config)
+        .map_err(|e| e.to_string())?;
 
     // Retry logic with exponential backoff
     let mut last_error = String::new();
@@ -202,55 +145,32 @@ pub async fn extract_tags_from_chunk(
             tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
         }
 
-        let response = client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://atomic.app")
-            .header("X-Title", "Atomic")
-            .json(&request)
-            .send()
-            .await;
+        match provider.complete(&messages, &llm_config).await {
+            Ok(response) => {
+                let content = &response.content;
+                if !content.is_empty() {
+                    // Log the raw LLM output
+                    eprintln!("=== TAG EXTRACTION LLM OUTPUT ===");
+                    eprintln!("{}", content);
+                    eprintln!("=================================");
 
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
-                    
-                    // Parse the OpenRouter response
-                    let openrouter_response: OpenRouterResponse = serde_json::from_str(&body)
-                        .map_err(|e| format!("Failed to parse OpenRouter response: {} - Body: {}", e, body))?;
-                    
-                    if let Some(choice) = openrouter_response.choices.first() {
-                        if let Some(content) = &choice.message.content {
-                            // Log the raw LLM output
-                            eprintln!("=== TAG EXTRACTION LLM OUTPUT ===");
-                            eprintln!("{}", content);
-                            eprintln!("=================================");
-
-                            // Parse the extraction result from the content
-                            let result: ExtractionResult = serde_json::from_str(content)
-                                .map_err(|e| format!("Failed to parse extraction result: {} - Content: {}", e, content))?;
-                            return Ok(result);
-                        }
-                    }
-                    return Err("No content in response".to_string());
-                } else if resp.status().as_u16() == 429 {
-                    // Rate limited, will retry
-                    last_error = "Rate limited".to_string();
-                    continue;
-                } else {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    last_error = format!("API error ({}): {}", status, body);
-                    // Don't retry on non-rate-limit errors
-                    break;
+                    // Parse the extraction result from the content
+                    let result: ExtractionResult = serde_json::from_str(content)
+                        .map_err(|e| format!("Failed to parse extraction result: {} - Content: {}", e, content))?;
+                    return Ok(result);
                 }
+                return Err("No content in response".to_string());
             }
             Err(e) => {
-                last_error = format!("Network error: {}", e);
-                // Will retry on network errors
-                continue;
+                let err_str = e.to_string();
+                if e.is_retryable() {
+                    last_error = err_str;
+                    continue;
+                } else {
+                    // Don't retry on non-retryable errors
+                    last_error = err_str;
+                    break;
+                }
             }
         }
     }
@@ -258,15 +178,9 @@ pub async fn extract_tags_from_chunk(
     Err(last_error)
 }
 
-/// Get simplified tag tree for LLM (names only, no IDs)
+/// Get simplified tag tree for LLM (tree format like `tree` CLI)
 /// This exposes only tag names to the LLM without internal database IDs
 pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
-    #[derive(Serialize)]
-    struct TagNodeSimple {
-        name: String,
-        children: Vec<TagNodeSimple>,
-    }
-
     // Get all tags
     let mut stmt = conn
         .prepare("SELECT id, name, parent_id FROM tags ORDER BY name")
@@ -279,29 +193,59 @@ pub fn get_tag_tree_for_llm(conn: &Connection) -> Result<String, String> {
         .map_err(|e| format!("Failed to collect tags: {}", e))?;
 
     if tags.is_empty() {
-        return Ok(r#"{"tags": []}"#.to_string());
+        return Ok("(no existing tags)".to_string());
     }
 
-    // Build tree structure with names only
-    fn build_tree(tags: &[(String, String, Option<String>)], parent_id: Option<&str>) -> Vec<TagNodeSimple> {
+    // Build tree string in `tree` CLI format
+    fn get_children(tags: &[(String, String, Option<String>)], parent_id: Option<&str>) -> Vec<(String, String)> {
         tags.iter()
             .filter(|(_, _, pid)| pid.as_deref() == parent_id)
-            .map(|(id, name, _)| TagNodeSimple {
-                name: name.clone(),
-                children: build_tree(tags, Some(id)),
-            })
+            .map(|(id, name, _)| (id.clone(), name.clone()))
             .collect()
     }
 
-    let tree = build_tree(&tags, None);
+    fn build_tree_string(
+        tags: &[(String, String, Option<String>)],
+        parent_id: Option<&str>,
+        prefix: &str,
+        is_root: bool,
+    ) -> String {
+        let children = get_children(tags, parent_id);
+        let mut result = String::new();
 
-    #[derive(Serialize)]
-    struct TagTreeWrapper {
-        tags: Vec<TagNodeSimple>,
+        for (i, (id, name)) in children.iter().enumerate() {
+            let is_last_child = i == children.len() - 1;
+
+            if is_root {
+                // Root level tags have no prefix
+                result.push_str(name);
+                result.push('\n');
+            } else {
+                // Child tags use tree characters
+                let connector = if is_last_child { "└── " } else { "├── " };
+                result.push_str(prefix);
+                result.push_str(connector);
+                result.push_str(name);
+                result.push('\n');
+            }
+
+            // Recurse for children
+            let new_prefix = if is_root {
+                "".to_string()
+            } else if is_last_child {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
+
+            result.push_str(&build_tree_string(tags, Some(id), &new_prefix, false));
+        }
+
+        result
     }
 
-    serde_json::to_string_pretty(&TagTreeWrapper { tags: tree })
-        .map_err(|e| format!("Failed to serialize tag tree: {}", e))
+    let tree_string = build_tree_string(&tags, None, "", true);
+    Ok(tree_string.trim_end().to_string())
 }
 
 /// Link tags to an atom (append to existing tags)
@@ -485,10 +429,10 @@ pub fn build_tag_info_for_consolidation(
 
 /// Consolidate tags on an atom by merging overly specific tags into broader ones
 pub async fn consolidate_atom_tags(
-    client: &Client,
-    api_key: &str,
+    provider_config: &ProviderConfig,
     tag_info: String,
     model: &str,
+    supported_params: Option<Vec<String>>,
 ) -> Result<TagConsolidationResult, String> {
     let user_content = format!("{}\n\nProvide your consolidation recommendations.", tag_info);
 
@@ -524,32 +468,24 @@ pub async fn consolidate_atom_tags(
         "additionalProperties": false
     });
 
-    let request = OpenRouterRequest {
-        model: model.to_string(),
-        messages: vec![
-            Message {
-                role: "system".to_string(),
-                content: TAG_CONSOLIDATION_PROMPT.to_string(),
-            },
-            Message {
-                role: "user".to_string(),
-                content: user_content,
-            },
-        ],
-        response_format: ResponseFormat {
-            format_type: "json_schema".to_string(),
-            json_schema: JsonSchemaWrapper {
-                name: "consolidation_result".to_string(),
-                strict: true,
-                schema,
-            },
-        },
-        temperature: 0.1,
-        max_tokens: 1000,
-        provider: ProviderPreferences {
-            require_parameters: true,
-        },
-    };
+    let messages = vec![
+        Message::system(TAG_CONSOLIDATION_PROMPT),
+        Message::user(user_content),
+    ];
+
+    let mut params = GenerationParams::new()
+        .with_temperature(0.1)
+        .with_structured_output(StructuredOutputSchema::new("consolidation_result", schema))
+        .with_minimize_reasoning(true); // Speed up reasoning models for simple consolidation
+
+    if let Some(supported) = supported_params {
+        params = params.with_supported_parameters(supported);
+    }
+
+    let llm_config = LlmConfig::new(model).with_params(params);
+
+    let provider = create_llm_provider(provider_config)
+        .map_err(|e| e.to_string())?;
 
     // Retry logic with exponential backoff
     let mut last_error = String::new();
@@ -559,55 +495,32 @@ pub async fn consolidate_atom_tags(
             tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
         }
 
-        let response = client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://atomic.app")
-            .header("X-Title", "Atomic")
-            .json(&request)
-            .send()
-            .await;
+        match provider.complete(&messages, &llm_config).await {
+            Ok(response) => {
+                let content = &response.content;
+                if !content.is_empty() {
+                    // Log the raw LLM output
+                    eprintln!("=== TAG CONSOLIDATION LLM OUTPUT ===");
+                    eprintln!("{}", content);
+                    eprintln!("====================================");
 
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let body = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
-
-                    // Parse the OpenRouter response
-                    let openrouter_response: OpenRouterResponse = serde_json::from_str(&body)
-                        .map_err(|e| format!("Failed to parse OpenRouter response: {} - Body: {}", e, body))?;
-
-                    if let Some(choice) = openrouter_response.choices.first() {
-                        if let Some(content) = &choice.message.content {
-                            // Log the raw LLM output
-                            eprintln!("=== TAG CONSOLIDATION LLM OUTPUT ===");
-                            eprintln!("{}", content);
-                            eprintln!("====================================");
-
-                            // Parse the consolidation result from the content
-                            let result: TagConsolidationResult = serde_json::from_str(content)
-                                .map_err(|e| format!("Failed to parse consolidation result: {} - Content: {}", e, content))?;
-                            return Ok(result);
-                        }
-                    }
-                    return Err("No content in response".to_string());
-                } else if resp.status().as_u16() == 429 {
-                    // Rate limited, will retry
-                    last_error = "Rate limited".to_string();
-                    continue;
-                } else {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    last_error = format!("API error ({}): {}", status, body);
-                    // Don't retry on non-rate-limit errors
-                    break;
+                    // Parse the consolidation result from the content
+                    let result: TagConsolidationResult = serde_json::from_str(content)
+                        .map_err(|e| format!("Failed to parse consolidation result: {} - Content: {}", e, content))?;
+                    return Ok(result);
                 }
+                return Err("No content in response".to_string());
             }
             Err(e) => {
-                last_error = format!("Network error: {}", e);
-                // Will retry on network errors
-                continue;
+                let err_str = e.to_string();
+                if e.is_retryable() {
+                    last_error = err_str;
+                    continue;
+                } else {
+                    // Don't retry on non-retryable errors
+                    last_error = err_str;
+                    break;
+                }
             }
         }
     }
