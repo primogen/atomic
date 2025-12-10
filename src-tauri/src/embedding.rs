@@ -129,6 +129,10 @@ pub async fn process_embedding_only(
         conn.execute("DELETE FROM atom_chunks WHERE atom_id = ?1", [atom_id])
             .map_err(|e| e.to_string())?;
 
+        // Also delete from FTS5 table
+        conn.execute("DELETE FROM atom_chunks_fts WHERE atom_id = ?1", [atom_id])
+            .ok();
+
         // Chunk content
         let chunks = chunk_content(content);
 
@@ -172,6 +176,13 @@ pub async fn process_embedding_only(
                 rusqlite::params![&chunk_id, &embedding_blob],
             )
             .map_err(|e| format!("Failed to insert vec_chunk: {}", e))?;
+
+            // Insert into FTS5 table for keyword search
+            conn.execute(
+                "INSERT INTO atom_chunks_fts (chunk_id, atom_id, content, chunk_index) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![&chunk_id, atom_id, chunk_content, index as i32],
+            )
+            .map_err(|e| format!("Failed to insert into FTS5: {}", e))?;
         }
 
         // Compute semantic edges for this atom
