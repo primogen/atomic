@@ -2,7 +2,6 @@ import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
-import { CanvasView } from '../canvas/CanvasView';
 import { FAB } from '../ui/FAB';
 import { useAtomsStore } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
@@ -18,20 +17,19 @@ export function MainView() {
   const search = useAtomsStore(s => s.search);
   const clearSemanticSearch = useAtomsStore(s => s.clearSemanticSearch);
 
-  const { viewMode, searchQuery, selectedTagId, highlightedAtomId } = useUIStore(
+  const { viewMode, searchQuery } = useUIStore(
     useShallow(s => ({
       viewMode: s.viewMode,
       searchQuery: s.searchQuery,
-      selectedTagId: s.selectedTagId,
-      highlightedAtomId: s.highlightedAtomId,
     }))
   );
+  const leftPanelOpen = useUIStore(s => s.leftPanelOpen);
+  const toggleLeftPanel = useUIStore(s => s.toggleLeftPanel);
   const setViewMode = useUIStore(s => s.setViewMode);
   const openDrawer = useUIStore(s => s.openDrawer);
   const openChatDrawer = useUIStore(s => s.openChatDrawer);
   const openWikiListDrawer = useUIStore(s => s.openWikiListDrawer);
   const openCommandPalette = useUIStore(s => s.openCommandPalette);
-  const setHighlightedAtom = useUIStore(s => s.setHighlightedAtom);
 
   // Debounced server-side search when searchQuery changes
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -68,12 +66,6 @@ export function MainView() {
 
   // Check if we're showing semantic search results
   const isSemanticSearch = semanticSearchResults !== null;
-
-  // Get search result IDs for canvas view
-  const searchResultIds = useMemo(() => {
-    if (!isSemanticSearch) return null;
-    return semanticSearchResults.map((r) => r.id);
-  }, [isSemanticSearch, semanticSearchResults]);
 
   // Build lookup map for matching chunk content (avoids .find() per atom)
   const matchingChunkMap = useMemo(() => {
@@ -136,10 +128,6 @@ export function MainView() {
     openCommandPalette('/');
   }, [openCommandPalette]);
 
-  const handleHighlightClear = useCallback(() => {
-    setHighlightedAtom(null);
-  }, [setHighlightedAtom]);
-
   const handleLoadMore = useCallback(() => {
     if (!isSemanticSearch && hasMore) {
       fetchNextPage();
@@ -153,28 +141,25 @@ export function MainView() {
     <main className="flex-1 flex flex-col h-full bg-[var(--color-bg-main)] overflow-hidden">
       {/* Titlebar row - aligned with traffic lights */}
       <div className="h-[52px] flex items-center gap-3 px-4 flex-shrink-0">
+        {/* Sidebar toggle — visible on small screens when panel is collapsed */}
+        {!leftPanelOpen && (
+          <button
+            onClick={toggleLeftPanel}
+            className="md:hidden p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+            title="Show sidebar"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+          </button>
+        )}
+
         {/* View Mode Toggle */}
         <div className="flex items-center bg-[var(--color-bg-card)] rounded-md border border-[var(--color-border)] shrink-0">
           <button
-            onClick={() => setViewMode('canvas')}
-            className={`p-1.5 rounded-l-md transition-colors ${
-              viewMode === 'canvas'
-                ? 'bg-[var(--color-accent)] text-white'
-                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
-            }`}
-            title="Canvas view"
-          >
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="5" cy="5" r="2" />
-              <circle cx="19" cy="8" r="2" />
-              <circle cx="12" cy="12" r="2" />
-              <circle cx="6" cy="18" r="2" />
-              <circle cx="17" cy="17" r="2" />
-            </svg>
-          </button>
-          <button
             onClick={() => setViewMode('grid')}
-            className={`p-1.5 transition-colors ${
+            className={`p-1.5 rounded-l-md transition-colors ${
               viewMode === 'grid'
                 ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
@@ -253,7 +238,7 @@ export function MainView() {
       </div>
 
       {/* Search results header - only show for grid/list views */}
-      {isSemanticSearch && viewMode !== 'canvas' && (
+      {isSemanticSearch && (
         <div className="px-4 py-2 text-sm text-[var(--color-text-secondary)] border-b border-[var(--color-border)]">
           {semanticSearchResults.length > 0 ? (
             <span>
@@ -267,16 +252,7 @@ export function MainView() {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {viewMode === 'canvas' ? (
-          <CanvasView
-            atoms={atoms}
-            selectedTagId={selectedTagId}
-            searchResultIds={searchResultIds}
-            highlightedAtomId={highlightedAtomId}
-            onAtomClick={handleAtomClick}
-            onHighlightClear={handleHighlightClear}
-          />
-        ) : viewMode === 'grid' ? (
+        {viewMode === 'grid' ? (
           <AtomGrid
             atoms={displayAtoms}
             onAtomClick={handleAtomClick}

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type DrawerMode = 'editor' | 'viewer' | 'wiki' | 'chat';
-export type ViewMode = 'canvas' | 'grid' | 'list';
+export type ViewMode = 'grid' | 'list';
 
 interface DrawerState {
   isOpen: boolean;
@@ -34,6 +34,8 @@ interface UIStore {
   viewMode: ViewMode;
   searchQuery: string;
   loadingOperations: LoadingOperation[];
+  // Left panel state
+  leftPanelOpen: boolean;
   // Local graph state
   localGraph: LocalGraphState;
   highlightedAtomId: string | null;
@@ -41,6 +43,8 @@ interface UIStore {
   commandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
   // Actions
+  setLeftPanelOpen: (open: boolean) => void;
+  toggleLeftPanel: () => void;
   setSelectedTag: (tagId: string | null) => void;
   expandTagPath: (tagIds: string[]) => void;  // Expand all tags in path
   toggleTagExpanded: (tagId: string) => void;
@@ -60,8 +64,6 @@ interface UIStore {
   closeLocalGraph: () => void;
   setLocalGraphDepth: (depth: 1 | 2) => void;
   setHighlightedAtom: (atomId: string | null) => void;
-  // Canvas navigation
-  locateOnCanvas: (atomId: string) => void;
   // Command palette actions
   openCommandPalette: (initialQuery?: string) => void;
   closeCommandPalette: () => void;
@@ -82,7 +84,7 @@ export const useUIStore = create<UIStore>()(
         conversationId: null,
         highlightText: null,
       },
-      viewMode: 'canvas',  // Default to canvas view
+      viewMode: 'grid',
       searchQuery: '',
       loadingOperations: [],
       localGraph: {
@@ -92,8 +94,12 @@ export const useUIStore = create<UIStore>()(
         navigationHistory: [],
       },
       highlightedAtomId: null,
+      leftPanelOpen: true,
       commandPaletteOpen: false,
       commandPaletteInitialQuery: '',
+
+      setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open }),
+      toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen })),
 
       setSelectedTag: (tagId: string | null) => set({ selectedTagId: tagId }),
 
@@ -247,21 +253,6 @@ export const useUIStore = create<UIStore>()(
 
       setHighlightedAtom: (atomId: string | null) =>
         set({ highlightedAtomId: atomId }),
-
-      // Canvas navigation - switch to canvas view and highlight the atom
-      locateOnCanvas: (atomId: string) =>
-        set((state) => ({
-          viewMode: 'canvas',
-          highlightedAtomId: atomId,
-          drawerState: {
-            ...state.drawerState,
-            isOpen: false,
-          },
-          localGraph: {
-            ...state.localGraph,
-            isOpen: false,
-          },
-        })),
 
       // Command palette actions
       openCommandPalette: (initialQuery?: string) => set({

@@ -9,3 +9,4 @@ gen/
 atomic.db
 atomic.db-journal
 atomic.db-wal
+docker-compose.prod.yml

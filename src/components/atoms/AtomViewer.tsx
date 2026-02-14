@@ -50,7 +50,6 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
   const closeDrawer = useUIStore(s => s.closeDrawer);
   const openDrawer = useUIStore(s => s.openDrawer);
   const openLocalGraph = useUIStore(s => s.openLocalGraph);
-  const locateOnCanvas = useUIStore(s => s.locateOnCanvas);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [metadataExpanded, setMetadataExpanded] = useState(false);
@@ -352,10 +351,6 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
     openLocalGraph(atom.id);
   };
 
-  const handleLocateOnCanvas = () => {
-    locateOnCanvas(atom.id);
-  };
-
   const MAX_VISIBLE_TAGS = 5;
   const visibleTags = atom.tags.slice(0, MAX_VISIBLE_TAGS);
   const hiddenCount = atom.tags.length - MAX_VISIBLE_TAGS;
@@ -399,13 +394,6 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
         <div className="flex items-center gap-2">
           {atom.embedding_status === 'complete' && (
             <>
-              <Button variant="ghost" size="sm" onClick={handleLocateOnCanvas} title="Locate on canvas">
-                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                Locate
-              </Button>
               <Button variant="ghost" size="sm" onClick={handleViewNeighborhood} title="View neighborhood graph">
                 <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <circle cx="12" cy="12" r="3" strokeWidth={2} />

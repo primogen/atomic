@@ -1,0 +1,45 @@
+# Rust build artifacts
+target/
+src-tauri/target/
+
+# Node
+node_modules/
+
+# Build outputs
+dist/
+dist-web/
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tauri binaries (platform-specific sidecars)
+src-tauri/binaries/
+
+# Generated code
+gen/
+
+# Scripts (not needed in image)
+scripts/
+
+# Browser extension
+extension/
+
+# Docs
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -567,11 +567,27 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
     }
   };
 
+  // Copy text to clipboard, with fallback for non-secure contexts (HTTP)
+  const copyToClipboard = async (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+  };
+
   // Copy created token to clipboard
   const handleCopyToken = async () => {
     if (!createdToken) return;
     try {
-      await navigator.clipboard.writeText(createdToken.token);
+      await copyToClipboard(createdToken.token);
       setTokenCopied(true);
       setTimeout(() => setTokenCopied(false), 2000);
     } catch (e) {
@@ -769,7 +785,7 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
   const handleCopyMcpConfig = async () => {
     if (!mcpConfig) return;
     try {
-      await navigator.clipboard.writeText(JSON.stringify(mcpConfig, null, 2));
+      await copyToClipboard(JSON.stringify(mcpConfig, null, 2));
       setMcpConfigCopied(true);
       setTimeout(() => setMcpConfigCopied(false), 2000);
     } catch (e) {
@@ -830,7 +846,7 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
       onClick={handleOverlayClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     >
-      <div className="bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-full max-w-md mx-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-[var(--color-bg-panel)] rounded-lg shadow-xl border border-[var(--color-border)] w-full max-w-lg mx-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)]">
           <div>
