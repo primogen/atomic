@@ -404,148 +404,40 @@ async fn search_hybrid_chunks(
     db: &Database,
     options: &SearchOptions,
 ) -> Result<Vec<ChunkResult>, String> {
-    // Get provider config from settings
-    let provider_config = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let settings_map = get_all_settings(&conn).map_err(|e| e.to_string())?;
-        ProviderConfig::from_settings(&settings_map)
-    };
+    // Run keyword and semantic searches using the existing implementations
+    let keyword_results = search_keyword_chunks(db, options).await?;
+    let semantic_results = search_semantic_chunks(db, options).await?;
 
-    let fetch_limit = options.limit * 5;
-
-    // Phase 1: Keyword search
-    let keyword_results: Vec<(String, String, String, i32)> = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-
-        let mut fts_stmt = conn
-            .prepare(
-                "SELECT id, atom_id, content, chunk_index
-                 FROM atom_chunks_fts
-                 WHERE atom_chunks_fts MATCH ?1
-                 ORDER BY bm25(atom_chunks_fts)
-                 LIMIT ?2",
-            )
-            .map_err(|e| format!("Failed to prepare FTS query: {}", e))?;
-
-        let escaped_query = escape_fts5_query(&options.query);
-
-        let results: Vec<(String, String, String, i32)> = fts_stmt
-            .query_map(rusqlite::params![&escaped_query, fetch_limit], |row| {
-                Ok((
-                    row.get::<_, String>(0)?, // chunk_id
-                    row.get::<_, String>(1)?, // atom_id
-                    row.get::<_, String>(2)?, // content
-                    row.get::<_, i32>(3)?,    // chunk_index
-                ))
-            })
-            .map_err(|e| format!("Failed to query FTS: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect FTS results: {}", e))?;
-
-        // Filter by scope
-        if !options.scope_tag_ids.is_empty() {
-            results
-                .into_iter()
-                .filter(|(_, atom_id, _, _)| {
-                    atom_has_scope_tag(&conn, atom_id, &options.scope_tag_ids).unwrap_or(false)
-                })
-                .collect()
-        } else {
-            results
-        }
-    };
-
-    // Phase 2: Semantic search
-    let provider = get_embedding_provider(&provider_config)
-        .map_err(|e| format!("Failed to create embedding provider: {}", e))?;
-    let embedding_config = EmbeddingConfig::new(provider_config.embedding_model());
-    let embeddings = provider
-        .embed_batch(&[options.query.clone()], &embedding_config)
-        .await
-        .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
-
-    let query_blob = f32_vec_to_blob_public(&embeddings[0]);
-
-    let semantic_results: Vec<(String, String, String, i32, f32)> = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-
-        let mut vec_stmt = conn
-            .prepare(
-                "SELECT chunk_id, distance
-                 FROM vec_chunks
-                 WHERE embedding MATCH ?1
-                 ORDER BY distance
-                 LIMIT ?2",
-            )
-            .map_err(|e| format!("Failed to prepare vec query: {}", e))?;
-
-        let similar_chunks: Vec<(String, f32)> = vec_stmt
-            .query_map(rusqlite::params![&query_blob, fetch_limit], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .map_err(|e| format!("Failed to query similar chunks: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
-
-        let filtered: Vec<(String, f32)> = similar_chunks
-            .into_iter()
-            .filter(|(_, distance)| distance_to_similarity(*distance) >= options.threshold)
-            .collect();
-
-        let chunk_ids: Vec<String> = filtered.iter().map(|(id, _)| id.clone()).collect();
-        let chunk_map = batch_fetch_chunk_info(&conn, &chunk_ids)?;
-
-        let mut results = Vec::new();
-        for (chunk_id, distance) in filtered {
-            let similarity = distance_to_similarity(distance);
-            if let Some((atom_id, content, chunk_index)) = chunk_map.get(&chunk_id) {
-                if !options.scope_tag_ids.is_empty()
-                    && !atom_has_scope_tag(&conn, atom_id, &options.scope_tag_ids)?
-                {
-                    continue;
-                }
-                results.push((chunk_id, atom_id.clone(), content.clone(), *chunk_index, similarity));
-            }
-        }
-        results
-    };
-
-    // Phase 3: Combine with RRF
-    // RRF score = 1/(k + rank) summed across result sets
+    // Combine with Reciprocal Rank Fusion
+    // RRF score = sum of 1/(k + rank) across result sets
     let mut chunk_scores: HashMap<String, (f32, String, String, i32)> = HashMap::new();
 
-    // Add keyword results with RRF scores
-    for (rank, (chunk_id, atom_id, content, chunk_index)) in keyword_results.iter().enumerate() {
+    for (rank, chunk) in keyword_results.iter().enumerate() {
         let rrf = 1.0 / (RRF_K + (rank + 1) as f32);
         chunk_scores.insert(
-            chunk_id.clone(),
-            (rrf, atom_id.clone(), content.clone(), *chunk_index),
+            chunk.chunk_id.clone(),
+            (rrf, chunk.atom_id.clone(), chunk.content.clone(), chunk.chunk_index),
         );
     }
 
-    // Add semantic results with RRF scores
-    for (rank, (chunk_id, atom_id, content, chunk_index, _)) in semantic_results.iter().enumerate()
-    {
+    for (rank, chunk) in semantic_results.iter().enumerate() {
         let rrf = 1.0 / (RRF_K + (rank + 1) as f32);
         chunk_scores
-            .entry(chunk_id.clone())
+            .entry(chunk.chunk_id.clone())
             .and_modify(|(score, _, _, _)| *score += rrf)
-            .or_insert((rrf, atom_id.clone(), content.clone(), *chunk_index));
+            .or_insert((rrf, chunk.atom_id.clone(), chunk.content.clone(), chunk.chunk_index));
     }
 
-    // Sort by RRF score and convert to ChunkResult
+    // Sort by RRF score and normalize to 0-1
+    let max_rrf = 2.0 / (RRF_K + 1.0);
     let mut combined: Vec<ChunkResult> = chunk_scores
         .into_iter()
-        .map(|(chunk_id, (score, atom_id, content, chunk_index))| {
-            // Normalize RRF score to 0-1 range
-            let max_rrf = 2.0 / (RRF_K + 1.0);
-            ChunkResult {
-                chunk_id,
-                atom_id,
-                content,
-                chunk_index,
-                score: (score / max_rrf).clamp(0.0, 1.0),
-            }
+        .map(|(chunk_id, (score, atom_id, content, chunk_index))| ChunkResult {
+            chunk_id,
+            atom_id,
+            content,
+            chunk_index,
+            score: (score / max_rrf).clamp(0.0, 1.0),
         })
         .collect();
 

@@ -60,7 +60,7 @@ fn get_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition::new(
             "search_atoms",
-            "Search for relevant atoms using semantic similarity. Use this to find information related to a specific topic or question.",
+            "Search for relevant atoms using hybrid keyword and semantic search. Use this to find information related to a specific topic or question.",
             json!({
                 "type": "object",
                 "properties": {
@@ -102,7 +102,7 @@ async fn execute_search_atoms(
     limit: i32,
     scope_tag_ids: &[String],
 ) -> Result<Vec<SemanticSearchResult>, String> {
-    let options = SearchOptions::new(query, SearchMode::Semantic, limit)
+    let options = SearchOptions::new(query, SearchMode::Hybrid, limit)
         .with_threshold(0.3)
         .with_scope(scope_tag_ids.to_vec());
     crate::search::search_atoms(db, options).await

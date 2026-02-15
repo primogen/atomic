@@ -30,9 +30,9 @@ impl AtomicMcpServer {
 
 #[tool_router]
 impl AtomicMcpServer {
-    /// Search for atoms using semantic vector similarity
+    /// Search for atoms using hybrid keyword + semantic search
     #[tool(
-        description = "Search for atoms using semantic vector similarity. Returns atoms with content relevant to the query, ranked by similarity score. Use this to find information in the knowledge base."
+        description = "Search for atoms using hybrid keyword and semantic search. Combines BM25 keyword matching with vector similarity using Reciprocal Rank Fusion for the best results. Use this to find information in the knowledge base."
     )]
     async fn semantic_search(
         &self,
@@ -43,7 +43,7 @@ impl AtomicMcpServer {
 
         let options = atomic_core::SearchOptions::new(
             params.query,
-            atomic_core::SearchMode::Semantic,
+            atomic_core::SearchMode::Hybrid,
             limit,
         )
         .with_threshold(threshold);
