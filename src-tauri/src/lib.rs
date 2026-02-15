@@ -84,6 +84,7 @@ pub fn run() {
             commands::get_atom_positions,
             commands::save_atom_positions,
             commands::get_atoms_with_embeddings,
+            commands::get_canvas_level,
             // Semantic graph commands
             commands::get_semantic_edges,
             commands::get_atom_neighborhood,

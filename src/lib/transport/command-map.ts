@@ -200,6 +200,19 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
     method: 'GET',
     path: '/api/canvas/atoms-with-embeddings',
   },
+  get_canvas_level: {
+    method: 'POST',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.parentId) params.set('parent_id', a.parentId as string);
+      const qs = params.toString();
+      return `/api/canvas/level${qs ? `?${qs}` : ''}`;
+    },
+    argsMode: 'body',
+    transformArgs: (a) => ({
+      children_hint: a.childrenHint ?? null,
+    }),
+  },
 
   // ==================== Graph ====================
   get_semantic_edges: {

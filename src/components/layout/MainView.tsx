@@ -2,6 +2,7 @@ import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
+import { HierarchicalCanvas } from '../canvas/HierarchicalCanvas';
 import { FAB } from '../ui/FAB';
 import { useAtomsStore } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
@@ -177,7 +178,7 @@ export function MainView() {
           </button>
           <button
             onClick={() => setViewMode('list')}
-            className={`p-1.5 rounded-r-md transition-colors ${
+            className={`p-1.5 transition-colors ${
               viewMode === 'list'
                 ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
@@ -191,6 +192,24 @@ export function MainView() {
                 strokeWidth={2}
                 d="M4 6h16M4 12h16M4 18h16"
               />
+            </svg>
+          </button>
+          <button
+            onClick={() => setViewMode('canvas')}
+            className={`p-1.5 rounded-r-md transition-colors ${
+              viewMode === 'canvas'
+                ? 'bg-[var(--color-accent)] text-white'
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+            }`}
+            title="Canvas view"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <circle cx="6" cy="6" r="2" />
+              <circle cx="18" cy="6" r="2" />
+              <circle cx="6" cy="18" r="2" />
+              <circle cx="18" cy="18" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <path strokeLinecap="round" d="M8 7l2.5 3.5M16 7l-2.5 3.5M8 17l2.5-3.5M16 17l-2.5-3.5" />
             </svg>
           </button>
         </div>
@@ -231,14 +250,16 @@ export function MainView() {
         {/* Drag region - fills available space */}
         <div data-tauri-drag-region className="flex-1 h-full drag-region" />
 
-        {/* Atom count */}
-        <span className="text-sm text-[var(--color-text-secondary)] shrink-0">
-          {displayCount} atom{displayCount !== 1 ? 's' : ''}
-        </span>
+        {/* Atom count — hide for canvas mode */}
+        {viewMode !== 'canvas' && (
+          <span className="text-sm text-[var(--color-text-secondary)] shrink-0">
+            {displayCount} atom{displayCount !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
 
       {/* Search results header - only show for grid/list views */}
-      {isSemanticSearch && (
+      {isSemanticSearch && viewMode !== 'canvas' && (
         <div className="px-4 py-2 text-sm text-[var(--color-text-secondary)] border-b border-[var(--color-border)]">
           {semanticSearchResults.length > 0 ? (
             <span>
@@ -252,7 +273,9 @@ export function MainView() {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {viewMode === 'grid' ? (
+        {viewMode === 'canvas' ? (
+          <HierarchicalCanvas />
+        ) : viewMode === 'grid' ? (
           <AtomGrid
             atoms={displayAtoms}
             onAtomClick={handleAtomClick}

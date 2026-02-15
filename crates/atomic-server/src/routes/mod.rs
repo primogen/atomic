@@ -83,6 +83,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         "/canvas/atoms-with-embeddings",
         web::get().to(canvas::get_atoms_with_embeddings),
     );
+    cfg.route(
+        "/canvas/level",
+        web::post().to(canvas::get_canvas_level),
+    );
 
     // Graph
     cfg.route("/graph/edges", web::get().to(graph::get_semantic_edges));

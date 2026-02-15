@@ -37,8 +37,8 @@ The central architectural principle is the separation of **business logic** from
     └──────┬──────┘  └──────┬───────┘  └──────────┘
            │                │
     ┌──────▼──────┐  ┌──────▼───────┐
-    │   React UI   │  │  Any HTTP    │
-    │(Tauri or HTTP)│  │   client    │
+    │   React UI   │  │  HTTP clients│
+    │(Tauri or HTTP)│  │ (iOS, etc.) │
     └─────────────┘  └──────────────┘
 ```
 
@@ -81,6 +81,22 @@ Two implementations exist: **OpenRouter** (cloud, default) and **Ollama** (local
 
 Provider configuration is stored in the settings table (SQLite key-value pairs). OpenRouter uses separate model settings for embedding, tagging, wiki, and chat. Ollama auto-discovers available models from the running server.
 
+### `ios/` — Native iOS App
+
+A SwiftUI app that connects to `atomic-server` over HTTP. It's another thin client — no local database, no Rust bindings, just a REST API client. Focused on reading and writing atoms on the go.
+
+The project uses **XcodeGen** (`project.yml`) to generate the Xcode project, so `AtomicMobile.xcodeproj` is a build artifact — edit `project.yml` and Swift sources, not the `.xcodeproj` directly.
+
+Key files:
+- `ios/project.yml` — XcodeGen project definition (deployment target, build settings)
+- `ios/AtomicMobile/AtomicApp.swift` — Entry point, routes to setup or main view
+- `ios/AtomicMobile/APIClient.swift` — HTTP client for `atomic-server` REST API
+- `ios/AtomicMobile/AtomStore.swift` — Observable state management
+- `ios/AtomicMobile/Theme.swift` — Colors matching the shared design system
+- `ios/AtomicMobile/Models.swift` — Codable models matching server JSON shapes
+
+Development is fully headless (no Xcode GUI required). Uses `xcodebuild` + `xcrun simctl` from the terminal, with screen sharing to view the simulator.
+
 ## Workspace Structure
 
 ```
@@ -91,6 +107,7 @@ crates/atomic-mcp/          # Standalone MCP server binary
 crates/mcp-bridge/          # HTTP-to-stdio MCP bridge
 src-tauri/                  # Tauri desktop app (thin wrapper)
 src/                        # React frontend (TypeScript)
+ios/                        # Native iOS app (SwiftUI, HTTP client)
 scripts/                    # Import, build, and database utilities
 ```
 
@@ -100,6 +117,7 @@ scripts/                    # Import, build, and database utilities
 - **Desktop**: Tauri v2
 - **Server**: actix-web, clap (CLI), tokio broadcast channels
 - **Frontend**: React 18, TypeScript, Vite 6, Tailwind CSS v4, Zustand 5
+- **iOS**: SwiftUI, Swift 6, XcodeGen, URLSession
 - **Editor**: CodeMirror 6 (markdown editing), react-markdown (rendering)
 - **Canvas**: d3-force (simulation), react-zoom-pan-pinch (interaction)
 - **Virtualization**: @tanstack/react-virtual
@@ -122,6 +140,16 @@ cargo run -p atomic-server -- --db-path /path/to/atomic.db serve --port 8080
 cargo run -p atomic-server -- --db-path /path/to/atomic.db token create --name "my-laptop"
 cargo run -p atomic-server -- --db-path /path/to/atomic.db token list
 cargo run -p atomic-server -- --db-path /path/to/atomic.db token revoke <token-id>
+
+# iOS app (headless dev workflow)
+cd ios && xcodegen generate                      # Regenerate .xcodeproj from project.yml
+xcodebuild -project ios/AtomicMobile.xcodeproj \
+  -scheme AtomicMobile \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+xcrun simctl install booted <path-to-.app>       # Install on running simulator
+xcrun simctl launch booted com.atomic.mobile     # Launch app
+xcrun simctl terminate booted com.atomic.mobile  # Stop app before reinstall
+open -a Simulator                                # Show simulator window (view via screen sharing)
 
 # Production
 npm run tauri build

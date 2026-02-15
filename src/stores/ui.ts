@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { CanvasLevel } from '../lib/api';
+import { getCanvasLevel } from '../lib/api';
 
 export type DrawerMode = 'editor' | 'viewer' | 'wiki' | 'chat';
-export type ViewMode = 'grid' | 'list';
+export type ViewMode = 'grid' | 'list' | 'canvas';
 
 interface DrawerState {
   isOpen: boolean;
@@ -27,6 +29,11 @@ export interface LoadingOperation {
   timestamp: number;
 }
 
+interface CanvasNavState {
+  currentLevel: CanvasLevel | null;
+  isLoading: boolean;
+}
+
 interface UIStore {
   selectedTagId: string | null;
   expandedTagIds: Record<string, boolean>;  // Tags that should be expanded in sidebar
@@ -42,6 +49,8 @@ interface UIStore {
   // Command palette state
   commandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
+  // Canvas navigation state
+  canvasNav: CanvasNavState;
   // Actions
   setLeftPanelOpen: (open: boolean) => void;
   toggleLeftPanel: () => void;
@@ -68,6 +77,8 @@ interface UIStore {
   openCommandPalette: (initialQuery?: string) => void;
   closeCommandPalette: () => void;
   toggleCommandPalette: () => void;
+  // Canvas navigation actions
+  navigateCanvas: (parentId: string | null, childrenHint?: string[]) => Promise<void>;
 }
 
 export const useUIStore = create<UIStore>()(
@@ -97,6 +108,10 @@ export const useUIStore = create<UIStore>()(
       leftPanelOpen: true,
       commandPaletteOpen: false,
       commandPaletteInitialQuery: '',
+      canvasNav: {
+        currentLevel: null,
+        isLoading: false,
+      },
 
       setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open }),
       toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen })),
@@ -268,6 +283,17 @@ export const useUIStore = create<UIStore>()(
           commandPaletteOpen: !state.commandPaletteOpen,
           commandPaletteInitialQuery: state.commandPaletteOpen ? '' : state.commandPaletteInitialQuery
         })),
+
+      navigateCanvas: async (parentId: string | null, childrenHint?: string[]) => {
+        set({ canvasNav: { currentLevel: null, isLoading: true } });
+        try {
+          const level = await getCanvasLevel(parentId, childrenHint);
+          set({ canvasNav: { currentLevel: level, isLoading: false } });
+        } catch (err) {
+          console.error('Failed to load canvas level:', err);
+          set({ canvasNav: { currentLevel: null, isLoading: false } });
+        }
+      },
     }),
     {
       name: 'atomic-ui-storage',

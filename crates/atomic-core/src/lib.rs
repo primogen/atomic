@@ -29,6 +29,7 @@
 //! ```
 
 pub mod agent;
+pub mod canvas_level;
 pub mod chunking;
 pub mod chat;
 pub mod clustering;
@@ -1136,6 +1137,22 @@ impl AtomicCore {
         }
 
         Ok(total_edges)
+    }
+
+    // ==================== Hierarchical Canvas ====================
+
+    /// Get a single level of the hierarchical canvas view.
+    ///
+    /// - `parent_id = None`: root level showing tag categories
+    /// - `parent_id = Some(tag_id)`: children of that tag (sub-tags or atoms)
+    /// - `children_hint`: for SemanticCluster drill-down, the list of child IDs to display
+    pub fn get_canvas_level(
+        &self,
+        parent_id: Option<&str>,
+        children_hint: Option<Vec<String>>,
+    ) -> Result<CanvasLevel, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        canvas_level::get_canvas_level(&conn, parent_id, children_hint)
     }
 
     // ==================== Embedding Status ====================

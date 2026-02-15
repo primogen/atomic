@@ -232,6 +232,55 @@ pub struct AtomCluster {
     pub dominant_tags: Vec<String>,
 }
 
+// ==================== Canvas Hierarchy Types ====================
+
+/// Type of node in the hierarchical canvas view
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasNodeType {
+    Category,
+    Tag,
+    SemanticCluster,
+    Atom,
+}
+
+/// A node in the hierarchical canvas view
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasNode {
+    pub id: String,
+    pub node_type: CanvasNodeType,
+    pub label: String,
+    pub atom_count: i32,
+    pub children_ids: Vec<String>,
+    pub dominant_tags: Vec<String>,
+    pub centroid: Option<Vec<f32>>,
+}
+
+/// An edge between two nodes at the same level
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasEdge {
+    pub source_id: String,
+    pub target_id: String,
+    pub weight: f32,
+}
+
+/// Entry in the breadcrumb navigation trail
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BreadcrumbEntry {
+    pub id: String,
+    pub label: String,
+}
+
+/// A single level in the hierarchical canvas, returned by get_canvas_level()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasLevel {
+    pub parent_id: Option<String>,
+    pub parent_label: Option<String>,
+    pub breadcrumb: Vec<BreadcrumbEntry>,
+    pub nodes: Vec<CanvasNode>,
+    pub edges: Vec<CanvasEdge>,
+}
+
 // ==================== Chat Types ====================
 // These are included here for use by the Tauri app's chat functionality,
 // even though chat is not part of atomic-core's scope.

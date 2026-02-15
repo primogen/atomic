@@ -7,6 +7,96 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::AtomCluster;
 
+/// Run label propagation on an arbitrary weighted adjacency list.
+/// Returns a map from node ID to cluster label (u32).
+/// Nodes in the same cluster share the same label.
+pub fn label_propagation(
+    edges: &[(String, String, f32)],
+) -> HashMap<String, u32> {
+    if edges.is_empty() {
+        return HashMap::new();
+    }
+
+    // Build adjacency list
+    let mut adjacency: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+    let mut all_nodes: HashSet<String> = HashSet::new();
+
+    for (source, target, score) in edges {
+        adjacency
+            .entry(source.clone())
+            .or_default()
+            .push((target.clone(), *score));
+        adjacency
+            .entry(target.clone())
+            .or_default()
+            .push((source.clone(), *score));
+        all_nodes.insert(source.clone());
+        all_nodes.insert(target.clone());
+    }
+
+    // Initialize each node with its own cluster label
+    let mut labels: HashMap<String, u32> = HashMap::new();
+    for (i, node) in all_nodes.iter().enumerate() {
+        labels.insert(node.clone(), i as u32);
+    }
+
+    // Label propagation: iterate until convergence or max iterations
+    let max_iterations = 20;
+    for _ in 0..max_iterations {
+        let mut changed = false;
+
+        for node in all_nodes.iter() {
+            if let Some(neighbors) = adjacency.get(node) {
+                let mut label_scores: HashMap<u32, f32> = HashMap::new();
+
+                for (neighbor, weight) in neighbors {
+                    if let Some(&neighbor_label) = labels.get(neighbor) {
+                        *label_scores.entry(neighbor_label).or_default() += weight;
+                    }
+                }
+
+                if let Some((&best_label, _)) = label_scores
+                    .iter()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                {
+                    let current_label = *labels.get(node).unwrap();
+                    if best_label != current_label {
+                        labels.insert(node.clone(), best_label);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    labels
+}
+
+/// Group label propagation results into clusters, filtering by minimum size.
+/// Returns Vec of (cluster members, dominant tags).
+pub fn group_labels_into_clusters(
+    labels: &HashMap<String, u32>,
+    min_cluster_size: usize,
+) -> Vec<Vec<String>> {
+    let mut clusters_map: HashMap<u32, Vec<String>> = HashMap::new();
+    for (node, label) in labels {
+        clusters_map.entry(*label).or_default().push(node.clone());
+    }
+
+    let mut groups: Vec<Vec<String>> = clusters_map
+        .into_values()
+        .filter(|members| members.len() >= min_cluster_size)
+        .collect();
+
+    // Sort by size (largest first)
+    groups.sort_by(|a, b| b.len().cmp(&a.len()));
+    groups
+}
+
 /// Compute clusters using a simplified label propagation algorithm.
 /// This groups atoms that are highly connected via semantic edges.
 pub fn compute_atom_clusters(
@@ -35,94 +125,17 @@ pub fn compute_atom_clusters(
         return Ok(vec![]);
     }
 
-    // Build adjacency list
-    let mut adjacency: HashMap<String, Vec<(String, f32)>> = HashMap::new();
-    let mut all_nodes: HashSet<String> = HashSet::new();
+    let labels = label_propagation(&edges);
+    let groups = group_labels_into_clusters(&labels, min_cluster_size as usize);
 
-    for (source, target, score) in &edges {
-        adjacency
-            .entry(source.clone())
-            .or_default()
-            .push((target.clone(), *score));
-        adjacency
-            .entry(target.clone())
-            .or_default()
-            .push((source.clone(), *score));
-        all_nodes.insert(source.clone());
-        all_nodes.insert(target.clone());
-    }
-
-    // Initialize each node with its own cluster label
-    let mut labels: HashMap<String, u32> = HashMap::new();
-    for (i, node) in all_nodes.iter().enumerate() {
-        labels.insert(node.clone(), i as u32);
-    }
-
-    // Label propagation: iterate until convergence or max iterations
-    let max_iterations = 20;
-    for _ in 0..max_iterations {
-        let mut changed = false;
-
-        for node in all_nodes.iter() {
-            if let Some(neighbors) = adjacency.get(node) {
-                // Count weighted votes for each neighbor's label
-                let mut label_scores: HashMap<u32, f32> = HashMap::new();
-
-                for (neighbor, weight) in neighbors {
-                    if let Some(&neighbor_label) = labels.get(neighbor) {
-                        *label_scores.entry(neighbor_label).or_default() += weight;
-                    }
-                }
-
-                // Find the label with highest weighted vote
-                if let Some((&best_label, _)) = label_scores
-                    .iter()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                {
-                    let current_label = *labels.get(node).unwrap();
-                    if best_label != current_label {
-                        labels.insert(node.clone(), best_label);
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-
-    // Group nodes by their final labels
-    let mut clusters_map: HashMap<u32, Vec<String>> = HashMap::new();
-    for (node, label) in &labels {
-        clusters_map.entry(*label).or_default().push(node.clone());
-    }
-
-    // Filter out small clusters and build result
     let mut clusters: Vec<AtomCluster> = Vec::new();
-    let mut cluster_id = 0i32;
-
-    for (_label, atom_ids) in clusters_map {
-        if atom_ids.len() >= min_cluster_size as usize {
-            // Get dominant tags for this cluster
-            let dominant_tags = get_dominant_tags(conn, &atom_ids)?;
-
-            clusters.push(AtomCluster {
-                cluster_id,
-                atom_ids,
-                dominant_tags,
-            });
-            cluster_id += 1;
-        }
-    }
-
-    // Sort clusters by size (largest first)
-    clusters.sort_by(|a, b| b.atom_ids.len().cmp(&a.atom_ids.len()));
-
-    // Re-assign IDs after sorting
-    for (i, cluster) in clusters.iter_mut().enumerate() {
-        cluster.cluster_id = i as i32;
+    for (i, atom_ids) in groups.into_iter().enumerate() {
+        let dominant_tags = get_dominant_tags(conn, &atom_ids)?;
+        clusters.push(AtomCluster {
+            cluster_id: i as i32,
+            atom_ids,
+            dominant_tags,
+        });
     }
 
     Ok(clusters)
