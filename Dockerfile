@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1a: Cargo Chef planner (dependency caching)
 # =============================================================================
-FROM rust:1.86-bookworm AS planner
+FROM rust:1.93-bookworm AS planner
 RUN cargo install cargo-chef
 WORKDIR /app
 COPY . .
@@ -10,7 +10,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # =============================================================================
 # Stage 1b: Cargo Chef cook + build atomic-server
 # =============================================================================
-FROM rust:1.86-bookworm AS rust-builder
+FROM rust:1.93-bookworm AS rust-builder
 RUN cargo install cargo-chef
 WORKDIR /app
 
