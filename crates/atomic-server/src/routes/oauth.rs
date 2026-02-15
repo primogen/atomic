@@ -542,7 +542,11 @@ fn consent_page_html(
 </div>
 <script>
   // Try to get the auth token from localStorage (same key the web UI uses)
-  const stored = localStorage.getItem('atomic-auth-token');
+  let stored = null;
+  try {{
+    const config = JSON.parse(localStorage.getItem('atomic-server-config') || 'null');
+    if (config && config.authToken) stored = config.authToken;
+  }} catch(e) {{}}
   const tokenField = document.getElementById('tokenField');
   const apiTokenHidden = document.getElementById('apiToken');
   if (stored) {{
