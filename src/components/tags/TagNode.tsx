@@ -96,7 +96,7 @@ export const TagNode = memo(function TagNode({ tag, level, selectedTagId, onSele
           </button>
         </>
       )}
-      <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">{tag.atom_count}</span>
+      {!hasChildren && <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">{tag.atom_count}</span>}
     </div>
   );
 });

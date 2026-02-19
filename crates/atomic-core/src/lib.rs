@@ -2818,4 +2818,5 @@ mod tests {
 
         assert_eq!(topics_tag.atom_count, 3);
     }
+
 }

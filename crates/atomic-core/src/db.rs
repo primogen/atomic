@@ -448,13 +448,6 @@ impl Database {
              END;",
         )?;
 
-        // --- Recalculate denormalized atom_count to fix any drift ---
-        conn.execute_batch(
-            "UPDATE tags SET atom_count = (
-                 SELECT COUNT(*) FROM atom_tags WHERE tag_id = tags.id
-             );",
-        )?;
-
         // --- Virtual tables (idempotent checks, recreated if wrong) ---
 
         let has_vec_chunks: bool = conn
