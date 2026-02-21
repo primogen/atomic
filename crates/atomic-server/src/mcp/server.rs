@@ -148,6 +148,7 @@ impl AtomicMcpServer {
         let request = atomic_core::CreateAtomRequest {
             content: params.content.clone(),
             source_url: params.source_url,
+            published_at: None,
             tag_ids: params.tag_ids.unwrap_or_default(),
         };
 

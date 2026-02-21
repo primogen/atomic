@@ -95,6 +95,7 @@ async function syncFeed(feedId: string) {
     const atomParams: CreateAtomParams[] = newItems.map((item) => ({
       content: formatItemAsMarkdown(item),
       sourceUrl: item.link,
+      publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : undefined,
     }));
 
     const result = await client.createAtomsBulk(atomParams);

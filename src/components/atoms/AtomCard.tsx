@@ -3,6 +3,25 @@ import { DisplayAtom } from '../../stores/atoms';
 import { TagChip } from '../tags/TagChip';
 import { formatRelativeDate } from '../../lib/date';
 
+/** Get display source — prefer pre-parsed `source` field, fall back to extracting from URL */
+function getDisplaySource(atom: DisplayAtom): string | null {
+  if (atom.source) return atom.source;
+  if (atom.source_url) {
+    try {
+      const hostname = new URL(atom.source_url).hostname;
+      return hostname.replace(/^www\./, '');
+    } catch {
+      return atom.source_url;
+    }
+  }
+  return null;
+}
+
+/** Get the best display date for an atom — prefer published_at over created_at */
+function getDisplayDate(atom: DisplayAtom): string {
+  return atom.published_at ?? atom.created_at;
+}
+
 interface AtomCardProps {
   atom: DisplayAtom;
   onAtomClick: (atomId: string) => void;
@@ -95,7 +114,9 @@ export const AtomCard = memo(function AtomCard({
 
   const { title, snippet } = atom;
 
-  const maxVisibleTags = viewMode === 'grid' ? 2 : 3;
+  const displaySource = getDisplaySource(atom);
+  const hasSource = !!displaySource;
+  const maxVisibleTags = viewMode === 'grid' ? (hasSource ? 1 : 2) : 3;
   const visibleTags = atom.tags.slice(0, maxVisibleTags);
   const remainingTags = atom.tags.length - maxVisibleTags;
 
@@ -136,9 +157,16 @@ export const AtomCard = memo(function AtomCard({
             </div>
           )}
         </div>
-        <span className="text-xs text-[var(--color-text-tertiary)] whitespace-nowrap">
-          {formatRelativeDate(atom.created_at)}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {displaySource && (
+            <span className="text-xs text-[var(--color-text-tertiary)] bg-[var(--color-bg-panel)] px-1.5 py-0.5 rounded truncate max-w-[120px]" title={atom.source_url ?? displaySource}>
+              {displaySource}
+            </span>
+          )}
+          <span className="text-xs text-[var(--color-text-tertiary)] whitespace-nowrap">
+            {formatRelativeDate(getDisplayDate(atom))}
+          </span>
+        </div>
       </div>
     );
   }
@@ -168,18 +196,21 @@ export const AtomCard = memo(function AtomCard({
         )}
       </div>
       <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
-        {atom.tags.length > 0 && (
-          <div className="flex items-center gap-1.5 mb-2">
-            {visibleTags.map((tag) => (
-              <TagChip key={tag.id} name={tag.name} size="sm" />
-            ))}
-            {remainingTags > 0 && (
-              <span className="text-xs text-[var(--color-text-tertiary)] shrink-0">+{remainingTags}</span>
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 mb-2">
+          {visibleTags.map((tag) => (
+            <TagChip key={tag.id} name={tag.name} size="sm" />
+          ))}
+          {remainingTags > 0 && (
+            <span className="text-xs text-[var(--color-text-tertiary)] shrink-0">+{remainingTags}</span>
+          )}
+          {displaySource && (
+            <span className="ml-auto text-xs text-[var(--color-text-tertiary)] bg-[var(--color-bg-panel)] px-1.5 py-0.5 rounded truncate max-w-[120px] shrink-0" title={atom.source_url ?? displaySource}>
+              {displaySource}
+            </span>
+          )}
+        </div>
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          {formatRelativeDate(atom.created_at)}
+          {formatRelativeDate(getDisplayDate(atom))}
         </span>
       </div>
     </div>
@@ -190,6 +221,7 @@ export const AtomCard = memo(function AtomCard({
     && prev.atom.embedding_status === next.atom.embedding_status
     && prev.atom.tagging_status === next.atom.tagging_status
     && prev.atom.tags.length === next.atom.tags.length
+    && prev.atom.source === next.atom.source
     && prev.viewMode === next.viewMode
     && prev.matchingChunkContent === next.matchingChunkContent;
 });

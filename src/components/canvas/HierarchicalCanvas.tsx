@@ -117,6 +117,8 @@ export function HierarchicalCanvas() {
           snippet: '',
           tags: [],
           source_url: null,
+          source: null,
+          published_at: null,
           created_at: '',
           updated_at: '',
           embedding_status: 'complete' as const,

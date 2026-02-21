@@ -7,6 +7,8 @@ export interface Atom {
   title: string;
   snippet: string;
   source_url: string | null;
+  source: string | null;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
   embedding_status: 'pending' | 'processing' | 'complete' | 'failed';
@@ -29,6 +31,8 @@ export interface AtomSummary {
   title: string;
   snippet: string;
   source_url: string | null;
+  source: string | null;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
   embedding_status: 'pending' | 'processing' | 'complete' | 'failed';
@@ -51,6 +55,8 @@ export interface SemanticSearchResult {
   title: string;
   snippet: string;
   source_url: string | null;
+  source: string | null;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
   embedding_status: 'pending' | 'processing' | 'complete' | 'failed';
@@ -67,6 +73,8 @@ export interface SimilarAtomResult {
   title: string;
   snippet: string;
   source_url: string | null;
+  source: string | null;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
   embedding_status: 'pending' | 'processing' | 'complete' | 'failed';
@@ -75,6 +83,15 @@ export interface SimilarAtomResult {
   similarity_score: number;
   matching_chunk_content: string;
   matching_chunk_index: number;
+}
+
+export type SourceFilterType = 'all' | 'manual' | 'external';
+export type SortField = 'updated' | 'created' | 'published' | 'title';
+export type SortOrder = 'desc' | 'asc';
+
+export interface SourceInfo {
+  source: string;
+  atom_count: number;
 }
 
 export type SearchMode = 'keyword' | 'semantic' | 'hybrid';
@@ -102,6 +119,13 @@ interface AtomsStore {
   semanticSearchResults: SemanticSearchResult[] | null;  // null = not searching
   isSearching: boolean;
 
+  // Filter & sort state
+  sourceFilter: SourceFilterType;
+  sourceValue: string | null;
+  sortBy: SortField;
+  sortOrder: SortOrder;
+  availableSources: SourceInfo[];
+
   // Existing methods
   fetchAtoms: () => Promise<void>;
   fetchAtomsByTag: (tagId: string) => Promise<void>;
@@ -120,6 +144,15 @@ interface AtomsStore {
   setSemanticSearchQuery: (query: string) => void;
   setSearchMode: (mode: SearchMode) => void;
   retryEmbedding: (atomId: string) => Promise<void>;
+
+  // Filter & sort methods
+  setSourceFilter: (filter: SourceFilterType) => void;
+  setSourceValue: (value: string | null) => void;
+  setSortBy: (field: SortField) => void;
+  setSortOrder: (order: SortOrder) => void;
+  fetchSources: () => Promise<void>;
+  hasActiveFilters: () => boolean;
+  clearFilters: () => void;
 }
 
 /** Convert an AtomWithTags (full content) to AtomSummary shape for the store */
@@ -129,6 +162,8 @@ function toSummary(atom: AtomWithTags): AtomSummary {
     title: atom.title,
     snippet: atom.snippet,
     source_url: atom.source_url,
+    source: atom.source,
+    published_at: atom.published_at,
     created_at: atom.created_at,
     updated_at: atom.updated_at,
     embedding_status: atom.embedding_status,
@@ -155,13 +190,23 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   semanticSearchResults: null,
   isSearching: false,
 
+  // Filter & sort state
+  sourceFilter: 'all' as SourceFilterType,
+  sourceValue: null,
+  sortBy: 'updated' as SortField,
+  sortOrder: 'desc' as SortOrder,
+  availableSources: [],
+
   fetchAtoms: async () => {
+    const { sourceFilter, sourceValue, sortBy, sortOrder } = get();
     set({ atoms: [], isLoadingInitial: true, error: null, currentTagFilter: null, currentOffset: 0, nextCursor: null, nextCursorId: null });
     try {
-      const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', {
-        limit: PAGE_SIZE,
-        offset: 0,
-      });
+      const args: Record<string, unknown> = { limit: PAGE_SIZE, offset: 0 };
+      if (sourceFilter !== 'all') args.source = sourceFilter;
+      if (sourceValue) args.sourceValue = sourceValue;
+      if (sortBy !== 'updated') args.sortBy = sortBy;
+      if (sortOrder !== 'desc') args.sortOrder = sortOrder;
+      const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', args);
       set({
         atoms: result.atoms,
         totalCount: result.total_count,
@@ -177,13 +222,15 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   },
 
   fetchAtomsByTag: async (tagId: string) => {
+    const { sourceFilter, sourceValue, sortBy, sortOrder } = get();
     set({ atoms: [], isLoadingInitial: true, error: null, currentTagFilter: tagId, currentOffset: 0, nextCursor: null, nextCursorId: null });
     try {
-      const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', {
-        tagId,
-        limit: PAGE_SIZE,
-        offset: 0,
-      });
+      const args: Record<string, unknown> = { tagId, limit: PAGE_SIZE, offset: 0 };
+      if (sourceFilter !== 'all') args.source = sourceFilter;
+      if (sourceValue) args.sourceValue = sourceValue;
+      if (sortBy !== 'updated') args.sortBy = sortBy;
+      if (sortOrder !== 'desc') args.sortOrder = sortOrder;
+      const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', args);
       set({
         atoms: result.atoms,
         totalCount: result.total_count,
@@ -199,7 +246,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   },
 
   fetchNextPage: async () => {
-    const { hasMore, isLoadingMore, currentTagFilter, nextCursor, nextCursorId } = get();
+    const { hasMore, isLoadingMore, currentTagFilter, nextCursor, nextCursorId, sourceFilter, sourceValue, sortBy, sortOrder } = get();
     if (!hasMore || isLoadingMore) return;
 
     set({ isLoadingMore: true });
@@ -213,6 +260,10 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
         args.cursor = nextCursor;
         args.cursorId = nextCursorId;
       }
+      if (sourceFilter !== 'all') args.source = sourceFilter;
+      if (sourceValue) args.sourceValue = sourceValue;
+      if (sortBy !== 'updated') args.sortBy = sortBy;
+      if (sortOrder !== 'desc') args.sortOrder = sortOrder;
 
       const result = await getTransport().invoke<PaginatedAtoms>('list_atoms', args);
       set((state) => {
@@ -387,6 +438,80 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
     } catch (error) {
       set({ error: String(error) });
       throw error;
+    }
+  },
+
+  // Filter & sort methods
+  setSourceFilter: (filter: SourceFilterType) => {
+    set({ sourceFilter: filter, nextCursor: null, nextCursorId: null });
+    // If switching away from a specific source value, clear it
+    if (filter !== 'external') set({ sourceValue: null });
+    const { currentTagFilter } = get();
+    if (currentTagFilter) {
+      get().fetchAtomsByTag(currentTagFilter);
+    } else {
+      get().fetchAtoms();
+    }
+  },
+
+  setSourceValue: (value: string | null) => {
+    set({ sourceValue: value, sourceFilter: value ? 'external' : 'all', nextCursor: null, nextCursorId: null });
+    const { currentTagFilter } = get();
+    if (currentTagFilter) {
+      get().fetchAtomsByTag(currentTagFilter);
+    } else {
+      get().fetchAtoms();
+    }
+  },
+
+  setSortBy: (field: SortField) => {
+    set({ sortBy: field, nextCursor: null, nextCursorId: null });
+    const { currentTagFilter } = get();
+    if (currentTagFilter) {
+      get().fetchAtomsByTag(currentTagFilter);
+    } else {
+      get().fetchAtoms();
+    }
+  },
+
+  setSortOrder: (order: SortOrder) => {
+    set({ sortOrder: order, nextCursor: null, nextCursorId: null });
+    const { currentTagFilter } = get();
+    if (currentTagFilter) {
+      get().fetchAtomsByTag(currentTagFilter);
+    } else {
+      get().fetchAtoms();
+    }
+  },
+
+  fetchSources: async () => {
+    try {
+      const sources = await getTransport().invoke<SourceInfo[]>('get_source_list', {});
+      set({ availableSources: sources });
+    } catch (error) {
+      console.error('Failed to fetch sources:', error);
+    }
+  },
+
+  hasActiveFilters: () => {
+    const { sourceFilter, sourceValue, sortBy, sortOrder } = get();
+    return sourceFilter !== 'all' || sourceValue !== null || sortBy !== 'updated' || sortOrder !== 'desc';
+  },
+
+  clearFilters: () => {
+    set({
+      sourceFilter: 'all',
+      sourceValue: null,
+      sortBy: 'updated',
+      sortOrder: 'desc',
+      nextCursor: null,
+      nextCursorId: null,
+    });
+    const { currentTagFilter } = get();
+    if (currentTagFilter) {
+      get().fetchAtomsByTag(currentTagFilter);
+    } else {
+      get().fetchAtoms();
     }
   },
 }));

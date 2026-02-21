@@ -15,27 +15,49 @@ pub struct GetAtomsQuery {
     pub offset: Option<i32>,
     pub cursor: Option<String>,
     pub cursor_id: Option<String>,
+    pub source: Option<String>,       // "all" | "manual" | "external"
+    pub source_value: Option<String>,  // e.g. "nytimes.com"
+    pub sort_by: Option<String>,       // "updated" | "created" | "published" | "title"
+    pub sort_order: Option<String>,    // "desc" | "asc"
 }
 
 pub async fn get_atoms(
     state: web::Data<AppState>,
     query: web::Query<GetAtomsQuery>,
 ) -> HttpResponse {
-    let limit = query.limit.unwrap_or(50);
-    let offset = query.offset.unwrap_or(0);
-    let tag_id = query.tag_id.clone();
-    let cursor = query.cursor.clone();
-    let cursor_id = query.cursor_id.clone();
+    let source_filter = match query.source.as_deref() {
+        Some("manual") => atomic_core::SourceFilter::Manual,
+        Some("external") => atomic_core::SourceFilter::External,
+        _ => atomic_core::SourceFilter::All,
+    };
+    let sort_by = match query.sort_by.as_deref() {
+        Some("created") => atomic_core::SortField::Created,
+        Some("published") => atomic_core::SortField::Published,
+        Some("title") => atomic_core::SortField::Title,
+        _ => atomic_core::SortField::Updated,
+    };
+    let sort_order = match query.sort_order.as_deref() {
+        Some("asc") => atomic_core::SortOrder::Asc,
+        _ => atomic_core::SortOrder::Desc,
+    };
+    let params = atomic_core::ListAtomsParams {
+        tag_id: query.tag_id.clone(),
+        limit: query.limit.unwrap_or(50),
+        offset: query.offset.unwrap_or(0),
+        cursor: query.cursor.clone(),
+        cursor_id: query.cursor_id.clone(),
+        source_filter,
+        source_value: query.source_value.clone(),
+        sort_by,
+        sort_order,
+    };
     let core = state.core.clone();
-    blocking_ok(move || {
-        core.list_atoms(
-            tag_id.as_deref(),
-            limit,
-            offset,
-            cursor.as_deref(),
-            cursor_id.as_deref(),
-        )
-    }).await
+    blocking_ok(move || core.list_atoms(&params)).await
+}
+
+pub async fn get_source_list(state: web::Data<AppState>) -> HttpResponse {
+    let core = state.core.clone();
+    blocking_ok(move || core.get_source_list()).await
 }
 
 pub async fn get_atom(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
@@ -53,6 +75,8 @@ pub async fn get_atom(state: web::Data<AppState>, path: web::Path<String>) -> Ht
 pub struct CreateAtomRequest {
     pub content: String,
     pub source_url: Option<String>,
+    pub published_at: Option<String>,
+    #[serde(default)]
     pub tag_ids: Vec<String>,
 }
 
@@ -69,6 +93,7 @@ pub async fn create_atom(
             atomic_core::CreateAtomRequest {
                 content: req.content,
                 source_url: req.source_url,
+                published_at: req.published_at,
                 tag_ids: req.tag_ids,
             },
             on_event,
@@ -93,6 +118,7 @@ pub async fn bulk_create_atoms(
         .map(|r| atomic_core::CreateAtomRequest {
             content: r.content,
             source_url: r.source_url,
+            published_at: r.published_at,
             tag_ids: r.tag_ids,
         })
         .collect();
@@ -116,7 +142,8 @@ pub async fn bulk_create_atoms(
 pub struct UpdateAtomRequest {
     pub content: String,
     pub source_url: Option<String>,
-    pub tag_ids: Vec<String>,
+    pub published_at: Option<String>,
+    pub tag_ids: Option<Vec<String>>,
 }
 
 pub async fn update_atom(
@@ -134,6 +161,7 @@ pub async fn update_atom(
             atomic_core::UpdateAtomRequest {
                 content: req.content,
                 source_url: req.source_url,
+                published_at: req.published_at,
                 tag_ids: req.tag_ids,
             },
             on_event,

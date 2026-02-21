@@ -39,6 +39,7 @@ base64 = "0.22"
 glob = "0.3"
 yaml-rust2 = "0.9"
 urlencoding = "2"
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

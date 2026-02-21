@@ -198,7 +198,7 @@ impl Database {
     ///   1. Add a new `if version < N` block at the end (before the virtual-table section)
     ///   2. End the block with `PRAGMA user_version = N;`
     ///   3. Bump LATEST_VERSION
-    const LATEST_VERSION: i32 = 3;
+    const LATEST_VERSION: i32 = 5;
 
     pub fn run_migrations(conn: &Connection) -> Result<(), AtomicCoreError> {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -455,6 +455,54 @@ impl Database {
             }
 
             conn.execute_batch("PRAGMA user_version = 3;")?;
+        }
+
+        // --- V3 → V4: Add published_at column to atoms ---
+        if version < 4 {
+            conn.execute_batch(
+                "ALTER TABLE atoms ADD COLUMN published_at TEXT;
+                 PRAGMA user_version = 4;",
+            )?;
+        }
+
+        // --- V4 → V5: Add source column (parsed from source_url) ---
+        if version < 5 {
+            conn.execute_batch(
+                "ALTER TABLE atoms ADD COLUMN source TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_atoms_source ON atoms(source) WHERE source IS NOT NULL;
+                 CREATE INDEX IF NOT EXISTS idx_atoms_created_id ON atoms(created_at DESC, id DESC);",
+            )?;
+
+            // Backfill: extract domain from existing source_url values.
+            // For http(s) URLs: strip scheme + 'www.' prefix to get hostname.
+            // For other schemes (kindle://, obsidian://): use scheme name.
+            // This is a best-effort SQL approximation; new atoms use the Rust parser.
+            conn.execute_batch(
+                "UPDATE atoms SET source =
+                    CASE
+                        -- http(s) URLs: extract hostname, strip www.
+                        WHEN source_url LIKE 'http://%' OR source_url LIKE 'https://%' THEN
+                            REPLACE(
+                                SUBSTR(
+                                    REPLACE(REPLACE(source_url, 'https://', ''), 'http://', ''),
+                                    1,
+                                    CASE
+                                        WHEN INSTR(REPLACE(REPLACE(source_url, 'https://', ''), 'http://', ''), '/') > 0
+                                        THEN INSTR(REPLACE(REPLACE(source_url, 'https://', ''), 'http://', ''), '/') - 1
+                                        ELSE LENGTH(REPLACE(REPLACE(source_url, 'https://', ''), 'http://', ''))
+                                    END
+                                ),
+                                'www.', ''
+                            )
+                        -- Other scheme:// URIs: use scheme as source
+                        WHEN INSTR(source_url, '://') > 0 THEN
+                            SUBSTR(source_url, 1, INSTR(source_url, '://') - 1)
+                        ELSE source_url
+                    END
+                 WHERE source_url IS NOT NULL AND source IS NULL;",
+            )?;
+
+            conn.execute_batch("PRAGMA user_version = 5;")?;
         }
 
         // --- Triggers (recreated every startup to stay current) ---

@@ -467,6 +467,30 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
 
       {/* Metadata */}
       <div className="border-t border-[var(--color-border)] px-6 py-4">
+        {/* Source URL - always visible when present */}
+        {atom.source_url && (
+          <div className="flex items-center gap-2 text-sm mb-3">
+            <svg className="w-3.5 h-3.5 text-[var(--color-text-tertiary)] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            {atom.source && (
+              <span className="text-xs text-[var(--color-text-tertiary)] bg-[var(--color-bg-panel)] px-1.5 py-0.5 rounded shrink-0">
+                {atom.source}
+              </span>
+            )}
+            <a
+              href={atom.source_url}
+              onClick={(e) => {
+                e.preventDefault();
+                openExternalUrl(atom.source_url!).catch(err => console.error('Failed to open URL:', err));
+              }}
+              className="text-[var(--color-accent)] hover:underline truncate cursor-pointer"
+            >
+              {atom.source_url}
+            </a>
+          </div>
+        )}
+
         {/* Collapsible header with tags */}
         <button
           onClick={() => setMetadataExpanded(!metadataExpanded)}
@@ -524,23 +548,11 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
               </div>
             )}
 
-            {/* Source URL */}
-            {atom.source_url && (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-[var(--color-text-secondary)]">Source:</span>
-                <a
-                  href={atom.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[var(--color-accent)] hover:underline truncate"
-                >
-                  {atom.source_url}
-                </a>
-              </div>
-            )}
-
             {/* Dates */}
             <div className="text-xs text-[var(--color-text-tertiary)] space-y-1">
+              {atom.published_at && (
+                <p>Published: {formatDate(atom.published_at)}</p>
+              )}
               <p>Created: {formatDate(atom.created_at)}</p>
               <p>Updated: {formatDate(atom.updated_at)}</p>
             </div>

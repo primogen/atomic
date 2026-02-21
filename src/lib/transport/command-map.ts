@@ -11,6 +11,7 @@ function atomBody(args: Record<string, unknown>) {
   return {
     content: args.content,
     source_url: args.sourceUrl ?? null,
+    published_at: args.publishedAt ?? null,
     tag_ids: args.tagIds ?? [],
   };
 }
@@ -30,8 +31,16 @@ export const COMMAND_MAP: Record<string, CommandSpec> = {
       if (a.offset != null) params.set('offset', String(a.offset));
       if (a.cursor) params.set('cursor', a.cursor as string);
       if (a.cursorId) params.set('cursor_id', a.cursorId as string);
+      if (a.source) params.set('source', a.source as string);
+      if (a.sourceValue) params.set('source_value', a.sourceValue as string);
+      if (a.sortBy) params.set('sort_by', a.sortBy as string);
+      if (a.sortOrder) params.set('sort_order', a.sortOrder as string);
       return `/api/atoms${params.toString() ? `?${params}` : ''}`;
     },
+  },
+  get_source_list: {
+    method: 'GET',
+    path: '/api/atoms/sources',
   },
   get_atoms_by_tag: {
     method: 'GET',

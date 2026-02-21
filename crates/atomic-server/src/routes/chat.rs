@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct CreateConversationBody {
+    #[serde(default)]
     pub tag_ids: Vec<String>,
     pub title: Option<String>,
 }
@@ -87,6 +88,7 @@ pub async fn delete_conversation(
 
 #[derive(Deserialize)]
 pub struct SetScopeBody {
+    #[serde(default)]
     pub tag_ids: Vec<String>,
 }
 

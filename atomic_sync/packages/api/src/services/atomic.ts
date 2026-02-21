@@ -3,6 +3,7 @@
 export interface CreateAtomParams {
   content: string;
   sourceUrl?: string;
+  publishedAt?: string;
   tagIds?: string[];
 }
 
@@ -53,6 +54,7 @@ export class AtomicClient {
     return this.request<AtomResponse>("POST", "/api/atoms", {
       content: params.content,
       source_url: params.sourceUrl,
+      published_at: params.publishedAt,
       tag_ids: params.tagIds ?? [],
     });
   }
@@ -66,6 +68,7 @@ export class AtomicClient {
       params.map((p) => ({
         content: p.content,
         source_url: p.sourceUrl,
+        published_at: p.publishedAt,
         tag_ids: p.tagIds ?? [],
       })),
     );

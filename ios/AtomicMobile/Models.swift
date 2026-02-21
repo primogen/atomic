@@ -87,12 +87,22 @@ struct AtomListResponse: Codable, Sendable {
 struct CreateAtomRequest: Codable, Sendable {
     let content: String
     let sourceUrl: String?
-    let tagIds: [String]?
+    let tagIds: [String]
 
     enum CodingKeys: String, CodingKey {
         case content
         case sourceUrl = "source_url"
         case tagIds = "tag_ids"
+    }
+}
+
+struct UpdateAtomBody: Codable, Sendable {
+    let content: String
+    let sourceUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case sourceUrl = "source_url"
     }
 }
 

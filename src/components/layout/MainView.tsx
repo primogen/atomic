@@ -2,6 +2,7 @@ import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
+import { FilterBar } from '../atoms/FilterBar';
 import { HierarchicalCanvas } from '../canvas/HierarchicalCanvas';
 import { FAB } from '../ui/FAB';
 import { useAtomsStore } from '../../stores/atoms';
@@ -272,6 +273,9 @@ export function MainView() {
           )}
         </div>
       )}
+
+      {/* Filter bar - visible for grid/list views when not searching */}
+      {!isSemanticSearch && viewMode !== 'canvas' && <FilterBar />}
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">

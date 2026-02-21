@@ -50,13 +50,13 @@ final class APIClient: Sendable {
     }
 
     func createAtom(content: String, sourceUrl: String? = nil) async throws -> Atom {
-        let body = CreateAtomRequest(content: content, sourceUrl: sourceUrl, tagIds: nil)
+        let body = CreateAtomRequest(content: content, sourceUrl: sourceUrl, tagIds: [])
         let data = try await request("/api/atoms", method: "POST", body: body)
         return try decode(Atom.self, from: data)
     }
 
     func updateAtom(id: String, content: String, sourceUrl: String? = nil) async throws -> Atom {
-        let body = CreateAtomRequest(content: content, sourceUrl: sourceUrl, tagIds: nil)
+        let body = UpdateAtomBody(content: content, sourceUrl: sourceUrl)
         let data = try await request("/api/atoms/\(id)", method: "PUT", body: body)
         return try decode(Atom.self, from: data)
     }

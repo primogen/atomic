@@ -19,6 +19,7 @@
 //!     CreateAtomRequest {
 //!         content: "My note content".to_string(),
 //!         source_url: None,
+//!         published_at: None,
 //!         tag_ids: vec![],
 //!     },
 //!     |event| match event {
@@ -69,6 +70,7 @@ use uuid::Uuid;
 pub struct CreateAtomRequest {
     pub content: String,
     pub source_url: Option<String>,
+    pub published_at: Option<String>,
     pub tag_ids: Vec<String>,
 }
 
@@ -77,7 +79,8 @@ pub struct CreateAtomRequest {
 pub struct UpdateAtomRequest {
     pub content: String,
     pub source_url: Option<String>,
-    pub tag_ids: Vec<String>,
+    pub published_at: Option<String>,
+    pub tag_ids: Option<Vec<String>>,
 }
 
 /// Main library facade providing high-level operations
@@ -314,14 +317,15 @@ impl AtomicCore {
         let now = Utc::now().to_rfc3339();
         let embedding_status = "pending";
         let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+        let source = request.source_url.as_deref().map(parse_source);
 
         {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
             conn.execute(
-                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, title, snippet)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                (&id, &request.content, &request.source_url, &now, &now, &embedding_status, &title, &snippet),
+                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, title, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                (&id, &request.content, &request.source_url, &source, &request.published_at, &now, &now, &embedding_status, &title, &snippet),
             )
             ?;
 
@@ -342,6 +346,8 @@ impl AtomicCore {
             title: title.clone(),
             snippet: snippet.clone(),
             source_url: request.source_url,
+            source,
+            published_at: request.published_at,
             created_at: now.clone(),
             updated_at: now,
             embedding_status: embedding_status.to_string(),
@@ -438,11 +444,12 @@ impl AtomicCore {
 
                 let id = Uuid::new_v4().to_string();
                 let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+                let source = request.source_url.as_deref().map(parse_source);
 
                 if let Err(e) = conn.execute(
-                    "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, title, snippet)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    (&id, &request.content, &request.source_url, &now, &now, &"pending", &title, &snippet),
+                    "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, title, snippet)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    (&id, &request.content, &request.source_url, &source, &request.published_at, &now, &now, &"pending", &title, &snippet),
                 ) {
                     conn.execute_batch("ROLLBACK")?;
                     return Err(AtomicCoreError::Database(e));
@@ -464,6 +471,8 @@ impl AtomicCore {
                     title: title.clone(),
                     snippet: snippet.clone(),
                     source_url: request.source_url.clone(),
+                    source,
+                    published_at: request.published_at.clone(),
                     created_at: now.clone(),
                     updated_at: now.clone(),
                     embedding_status: "pending".to_string(),
@@ -530,28 +539,31 @@ impl AtomicCore {
         let now = Utc::now().to_rfc3339();
         let embedding_status = "pending";
         let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+        let source = request.source_url.as_deref().map(parse_source);
 
         {
             let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
             conn.execute(
-                "UPDATE atoms SET content = ?1, source_url = ?2, updated_at = ?3, embedding_status = ?4,
-                 title = ?5, snippet = ?6
-                 WHERE id = ?7",
-                (&request.content, &request.source_url, &now, &embedding_status, &title, &snippet, id),
+                "UPDATE atoms SET content = ?1, source_url = ?2, source = ?3, published_at = ?4, updated_at = ?5, embedding_status = ?6,
+                 title = ?7, snippet = ?8
+                 WHERE id = ?9",
+                (&request.content, &request.source_url, &source, &request.published_at, &now, &embedding_status, &title, &snippet, id),
             )
             ?;
 
-            // Remove existing tags and add new ones
-            conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])
-                ?;
+            // Remove existing tags and add new ones (only if tag_ids provided)
+            if let Some(ref tag_ids) = request.tag_ids {
+                conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])
+                    ?;
 
-            for tag_id in &request.tag_ids {
-                conn.execute(
-                    "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
-                    (id, tag_id),
-                )
-                ?;
+                for tag_id in tag_ids {
+                    conn.execute(
+                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                        (id, tag_id),
+                    )
+                    ?;
+                }
             }
         }
 
@@ -632,45 +644,106 @@ impl AtomicCore {
         Ok(result)
     }
 
-    /// List atoms with pagination and summaries (no full content).
+    /// List atoms with pagination, filtering, sorting, and summaries (no full content).
     /// This is the primary frontend-facing method for loading atom lists.
     ///
     /// Supports cursor-based (keyset) pagination: when `cursor` and `cursor_id`
-    /// are provided, the query seeks directly to that position using the
-    /// `(updated_at DESC, id DESC)` index, giving O(limit) performance
-    /// regardless of page depth. Falls back to OFFSET when no cursor is given.
+    /// are provided, the query seeks directly to that position, giving O(limit)
+    /// performance regardless of page depth. Falls back to OFFSET when no cursor is given.
     pub fn list_atoms(
         &self,
-        tag_id: Option<&str>,
-        limit: i32,
-        offset: i32,
-        cursor: Option<&str>,
-        cursor_id: Option<&str>,
+        params: &ListAtomsParams,
     ) -> Result<PaginatedAtoms, AtomicCoreError> {
         let conn = self.db.read_conn()?;
-        let use_cursor = cursor.is_some() && cursor_id.is_some();
+        let use_cursor = params.cursor.is_some() && params.cursor_id.is_some();
 
-        // Tag-scoped queries use EXISTS so SQLite walks idx_atoms_updated_id
-        // in ORDER BY order and stops after LIMIT rows — no full materialization.
-        // Tags are ≤2 levels deep, so flat OR replaces recursive CTE.
-        //
-        // Count: leaf tags read the denormalized atom_count column (instant).
-        // Root tags (with children) fall back to COUNT(DISTINCT) since atoms
-        // can be tagged with multiple children, making SUM overcount.
-        type AtomRow = (String, String, String, Option<String>, String, String, String, String);
-        let (total_count, atoms): (i32, Vec<AtomRow>) = if let Some(tid) = tag_id {
+        // Determine if non-tag filters are active (source filters bypass atom_count shortcut)
+        let has_extra_filters = !matches!(params.source_filter, SourceFilter::All)
+            || params.source_value.is_some();
+
+        // --- Build ORDER BY ---
+        let sort_col = match params.sort_by {
+            SortField::Updated => "a.updated_at",
+            SortField::Created => "a.created_at",
+            SortField::Published => "COALESCE(a.published_at, a.created_at)",
+            SortField::Title => "a.title",
+        };
+        let sort_dir = match params.sort_order {
+            SortOrder::Desc => "DESC",
+            SortOrder::Asc => "ASC",
+        };
+        let cursor_cmp = match params.sort_order {
+            SortOrder::Desc => "<",
+            SortOrder::Asc => ">",
+        };
+
+        // --- Build WHERE clauses + bind values ---
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        // Tag filter
+        if let Some(ref tid) = params.tag_id {
+            where_clauses.push(format!(
+                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
+                p = param_idx
+            ));
+            bind_values.push(Box::new(tid.clone()));
+            param_idx += 1;
+        }
+
+        // Source filter
+        match params.source_filter {
+            SourceFilter::All => {}
+            SourceFilter::Manual => {
+                where_clauses.push("a.source IS NULL".to_string());
+            }
+            SourceFilter::External => {
+                where_clauses.push("a.source IS NOT NULL".to_string());
+            }
+        }
+
+        // Source value filter (specific source like "nytimes.com")
+        if let Some(ref sv) = params.source_value {
+            where_clauses.push(format!("a.source = ?{}", param_idx));
+            bind_values.push(Box::new(sv.clone()));
+            param_idx += 1;
+        }
+
+        // Cursor
+        if use_cursor {
+            where_clauses.push(format!(
+                "({sort_col}, a.id) {cursor_cmp} (?{p1}, ?{p2})",
+                sort_col = sort_col,
+                cursor_cmp = cursor_cmp,
+                p1 = param_idx,
+                p2 = param_idx + 1,
+            ));
+            bind_values.push(Box::new(params.cursor.clone().unwrap()));
+            bind_values.push(Box::new(params.cursor_id.clone().unwrap()));
+            param_idx += 2;
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // --- Count query ---
+        let total_count: i32 = if !has_extra_filters && params.tag_id.is_some() {
+            // Fast path: use denormalized atom_count for tag-only filters
+            let tid = params.tag_id.as_ref().unwrap();
             let has_children: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM tags WHERE parent_id = ?1)",
                 rusqlite::params![tid],
                 |row| row.get(0),
             )?;
-            let count: i32 = if has_children {
+            if has_children {
                 conn.query_row(
                     "SELECT COUNT(DISTINCT at.atom_id)
                      FROM atom_tags at
-                     WHERE at.tag_id IN (
-                         SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1
-                     )",
+                     WHERE at.tag_id IN (SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1)",
                     rusqlite::params![tid],
                     |row| row.get(0),
                 )?
@@ -680,98 +753,104 @@ impl AtomicCore {
                     rusqlite::params![tid],
                     |row| row.get(0),
                 )?
-            };
-            let rows = if use_cursor {
-                let mut stmt = conn.prepare(
-                    "SELECT a.id, a.title, a.snippet, a.source_url,
-                        a.created_at, a.updated_at,
-                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                    FROM atoms a
-                    WHERE EXISTS (
-                        SELECT 1 FROM atom_tags at
-                        WHERE at.atom_id = a.id
-                        AND at.tag_id IN (
-                            SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1
-                        )
-                    )
-                    AND (a.updated_at, a.id) < (?2, ?3)
-                    ORDER BY a.updated_at DESC, a.id DESC
-                    LIMIT ?4",
-                )?;
-                let rows = stmt.query_map(
-                    rusqlite::params![tid, cursor.unwrap(), cursor_id.unwrap(), limit],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
-                )?.collect::<Result<Vec<_>, _>>()?;
-                rows
+            }
+        } else if has_extra_filters || params.tag_id.is_some() {
+            // Build count query with filters (no cursor/limit)
+            let mut count_wheres: Vec<String> = Vec::new();
+            let mut count_binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut ci = 1;
+
+            if let Some(ref tid) = params.tag_id {
+                count_wheres.push(format!(
+                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
+                    p = ci
+                ));
+                count_binds.push(Box::new(tid.clone()));
+                ci += 1;
+            }
+            match params.source_filter {
+                SourceFilter::All => {}
+                SourceFilter::Manual => count_wheres.push("a.source IS NULL".to_string()),
+                SourceFilter::External => count_wheres.push("a.source IS NOT NULL".to_string()),
+            }
+            if let Some(ref sv) = params.source_value {
+                count_wheres.push(format!("a.source = ?{}", ci));
+                count_binds.push(Box::new(sv.clone()));
+                // ci += 1;
+            }
+            let count_where = if count_wheres.is_empty() {
+                String::new()
             } else {
-                let mut stmt = conn.prepare(
-                    "SELECT a.id, a.title, a.snippet, a.source_url,
+                format!("WHERE {}", count_wheres.join(" AND "))
+            };
+            let count_sql = format!("SELECT COUNT(*) FROM atoms a {}", count_where);
+            let count_refs: Vec<&dyn rusqlite::types::ToSql> = count_binds.iter().map(|b| b.as_ref()).collect();
+            conn.query_row(&count_sql, count_refs.as_slice(), |row| row.get(0))?
+        } else {
+            // No filters at all — plain count
+            conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?
+        };
+
+        // --- Data query ---
+        // Bind values for LIMIT/OFFSET after cursor
+        let limit_param = param_idx;
+        bind_values.push(Box::new(params.limit));
+        param_idx += 1;
+
+        let data_sql = if use_cursor {
+            format!(
+                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
                         a.created_at, a.updated_at,
                         COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                    FROM atoms a
-                    WHERE EXISTS (
-                        SELECT 1 FROM atom_tags at
-                        WHERE at.atom_id = a.id
-                        AND at.tag_id IN (
-                            SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1
-                        )
-                    )
-                    ORDER BY a.updated_at DESC, a.id DESC
-                    LIMIT ?2 OFFSET ?3",
-                )?;
-                let rows = stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
-                })?.collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-            (count, rows)
-        } else if use_cursor {
-            let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
-            let mut stmt = conn.prepare(
-                "SELECT id, title, snippet, source_url,
-                 created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms
-                 WHERE (updated_at, id) < (?1, ?2)
-                 ORDER BY updated_at DESC, id DESC
-                 LIMIT ?3",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![cursor.unwrap(), cursor_id.unwrap(), limit], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
-            })?.collect::<Result<Vec<_>, _>>()?;
-            (count, rows)
+                 FROM atoms a
+                 {where_sql}
+                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
+                 LIMIT ?{limit_param}",
+            )
         } else {
-            let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
-            let mut stmt = conn.prepare(
-                "SELECT id, title, snippet, source_url,
-                 created_at, updated_at,
-                 COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')
-                 FROM atoms ORDER BY updated_at DESC, id DESC LIMIT ?1 OFFSET ?2",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
-            })?.collect::<Result<Vec<_>, _>>()?;
-            (count, rows)
+            let offset_param = param_idx;
+            bind_values.push(Box::new(params.offset));
+            // param_idx += 1;
+            format!(
+                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
+                        a.created_at, a.updated_at,
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+                 FROM atoms a
+                 {where_sql}
+                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
+                 LIMIT ?{limit_param} OFFSET ?{offset_param}",
+            )
         };
+
+        let bind_refs: Vec<&dyn rusqlite::types::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&data_sql)?;
+        type AtomRow = (String, String, String, Option<String>, Option<String>, Option<String>, String, String, String, String);
+        let atoms: Vec<AtomRow> = stmt.query_map(bind_refs.as_slice(), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
 
         // Batch load tags for the page
         let atom_ids: Vec<String> = atoms.iter().map(|a| a.0.clone()).collect();
         let tag_map = get_atom_tags_map_for_ids(&conn, &atom_ids)?;
 
-        // Extract cursor from the last result for keyset pagination
+        // Extract cursor from the last result for keyset pagination.
+        // Cursor value comes from the sort column (index 7 = updated_at by default,
+        // but we always use updated_at for cursor position).
         let (next_cursor, next_cursor_id) = atoms.last().map(|last| {
-            (Some(last.5.clone()), Some(last.0.clone()))
+            (Some(last.7.clone()), Some(last.0.clone()))
         }).unwrap_or((None, None));
 
         let summaries: Vec<AtomSummary> = atoms
             .into_iter()
-            .map(|(id, title, snippet, source_url, created_at, updated_at, embedding_status, tagging_status)| {
+            .map(|(id, title, snippet, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status)| {
                 let tags = tag_map.get(&id).cloned().unwrap_or_default();
                 AtomSummary {
                     id,
                     title,
                     snippet,
                     source_url,
+                    source,
+                    published_at,
                     created_at,
                     updated_at,
                     embedding_status,
@@ -784,11 +863,28 @@ impl AtomicCore {
         Ok(PaginatedAtoms {
             atoms: summaries,
             total_count,
-            limit,
-            offset,
+            limit: params.limit,
+            offset: params.offset,
             next_cursor,
             next_cursor_id,
         })
+    }
+
+    /// Get a list of distinct source values with counts (for filter dropdowns).
+    pub fn get_source_list(&self) -> Result<Vec<SourceInfo>, AtomicCoreError> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT source, COUNT(*) as cnt FROM atoms WHERE source IS NOT NULL GROUP BY source ORDER BY cnt DESC",
+        )?;
+        let results = stmt
+            .query_map([], |row| {
+                Ok(SourceInfo {
+                    source: row.get(0)?,
+                    atom_count: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 
     // ==================== Tag Operations ====================
@@ -1787,13 +1883,16 @@ impl AtomicCore {
 
             let atom_id = Uuid::new_v4().to_string();
             let (title, snippet) = extract_title_and_snippet(&note.content, 300);
+            let source = parse_source(&note.source_url);
             match conn.execute(
-                "INSERT INTO atoms (id, content, source_url, created_at, updated_at, embedding_status, tagging_status, title, snippet)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 'pending', ?6, ?7)",
+                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status, title, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 'pending', ?8, ?9)",
                 rusqlite::params![
                     &atom_id,
                     &note.content,
                     &note.source_url,
+                    &source,
+                    Option::<String>::None,
                     &note.created_at,
                     &note.updated_at,
                     &title,
@@ -2509,11 +2608,25 @@ pub fn extract_title_and_snippet(content: &str, max_snippet_len: usize) -> (Stri
     (title, snippet)
 }
 
+/// Parse a source identifier from a source_url.
+/// - HTTP(S) URLs: extract hostname, strip `www.` prefix
+/// - Other scheme:// URIs (kindle://, obsidian://): use the scheme
+/// - Fallback: return the raw string
+pub(crate) fn parse_source(source_url: &str) -> String {
+    if let Ok(parsed) = url::Url::parse(source_url) {
+        if let Some(host) = parsed.host_str() {
+            return host.strip_prefix("www.").unwrap_or(host).to_string();
+        }
+        return parsed.scheme().to_string();
+    }
+    source_url.to_string()
+}
+
 /// Standard SELECT columns for reading an Atom from the DB.
-pub(crate) const ATOM_COLUMNS: &str = "id, content, title, snippet, source_url, created_at, updated_at, COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')";
+pub(crate) const ATOM_COLUMNS: &str = "id, content, title, snippet, source_url, source, published_at, created_at, updated_at, COALESCE(embedding_status, 'pending'), COALESCE(tagging_status, 'pending')";
 
 /// Same columns but table-aliased for JOINs.
-pub(crate) const ATOM_COLUMNS_A: &str = "a.id, a.content, a.title, a.snippet, a.source_url, a.created_at, a.updated_at, COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')";
+pub(crate) const ATOM_COLUMNS_A: &str = "a.id, a.content, a.title, a.snippet, a.source_url, a.source, a.published_at, a.created_at, a.updated_at, COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')";
 
 /// Parse an Atom from a row selected with ATOM_COLUMNS.
 pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
@@ -2523,10 +2636,12 @@ pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
         title: row.get(2)?,
         snippet: row.get(3)?,
         source_url: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-        embedding_status: row.get(7)?,
-        tagging_status: row.get(8)?,
+        source: row.get(5)?,
+        published_at: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        embedding_status: row.get(9)?,
+        tagging_status: row.get(10)?,
     })
 }
 
@@ -2745,6 +2860,7 @@ mod tests {
             CreateAtomRequest {
                 content: content.to_string(),
                 source_url: None,
+                published_at: None,
                 tag_ids: vec![],
             },
             |_| {}, // no-op callback
@@ -2912,6 +3028,7 @@ mod tests {
                 CreateAtomRequest {
                     content: "Tagged content".to_string(),
                     source_url: None,
+                    published_at: None,
                     tag_ids: vec![tag1.id.clone(), tag2.id.clone()],
                 },
                 |_| {},
@@ -2939,6 +3056,7 @@ mod tests {
                 CreateAtomRequest {
                     content: "AI content".to_string(),
                     source_url: None,
+                    published_at: None,
                     tag_ids: vec![ai.id.clone()],
                 },
                 |_| {},
@@ -2965,6 +3083,7 @@ mod tests {
                 CreateAtomRequest {
                     content: format!("Atom {}", i),
                     source_url: None,
+                    published_at: None,
                     tag_ids: vec![topics.id.clone()],
                 },
                 |_| {},

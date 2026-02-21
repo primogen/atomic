@@ -13,6 +13,8 @@ pub struct Atom {
     pub title: String,
     pub snippet: String,
     pub source_url: Option<String>,
+    pub source: Option<String>,
+    pub published_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub embedding_status: String, // 'pending', 'processing', 'complete', 'failed'
@@ -57,6 +59,8 @@ pub struct AtomSummary {
     pub title: String,
     pub snippet: String,
     pub source_url: Option<String>,
+    pub source: Option<String>,
+    pub published_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub embedding_status: String,
@@ -414,4 +418,57 @@ pub struct ChatCitation {
     pub chunk_index: Option<i32>,
     pub excerpt: String,
     pub relevance_score: Option<f32>,
+}
+
+// ==================== Filtering & Sorting Types ====================
+
+/// Source filter for atom list queries
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFilter {
+    #[default]
+    All,
+    Manual,
+    External,
+}
+
+/// Sort field for atom list queries
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    #[default]
+    Updated,
+    Created,
+    Published,
+    Title,
+}
+
+/// Sort direction
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    #[default]
+    Desc,
+    Asc,
+}
+
+/// Parameters for list_atoms query
+#[derive(Debug, Clone)]
+pub struct ListAtomsParams {
+    pub tag_id: Option<String>,
+    pub limit: i32,
+    pub offset: i32,
+    pub cursor: Option<String>,
+    pub cursor_id: Option<String>,
+    pub source_filter: SourceFilter,
+    pub source_value: Option<String>,
+    pub sort_by: SortField,
+    pub sort_order: SortOrder,
+}
+
+/// Source with atom count for filter dropdown
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceInfo {
+    pub source: String,
+    pub atom_count: i32,
 }
