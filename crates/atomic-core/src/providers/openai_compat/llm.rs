@@ -373,6 +373,7 @@ pub async fn complete_streaming_with_tools(
     let mut tool_call_accumulators: Vec<ToolCallAccumulator> = Vec::new();
     let mut buffer = String::new();
     let mut finish_reason = None;
+    let mut done_emitted = false;
 
     let mut stream = response.bytes_stream();
 
@@ -393,6 +394,7 @@ pub async fn complete_streaming_with_tools(
                 on_delta(StreamDelta::Done {
                     finish_reason: finish_reason.clone(),
                 });
+                done_emitted = true;
                 break;
             }
 
@@ -452,6 +454,13 @@ pub async fn complete_streaming_with_tools(
                 }
             }
         }
+    }
+
+    // Some OpenAI-compatible servers close the stream without sending [DONE]
+    if !done_emitted {
+        on_delta(StreamDelta::Done {
+            finish_reason: finish_reason.clone(),
+        });
     }
 
     let tool_calls = if tool_call_accumulators.is_empty() {

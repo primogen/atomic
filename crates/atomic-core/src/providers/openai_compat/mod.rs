@@ -32,7 +32,7 @@ impl OpenAICompatProvider {
         Self {
             client,
             api_key,
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
 
