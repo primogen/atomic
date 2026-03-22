@@ -7,6 +7,7 @@ import { useSettingsStore } from '../../../stores/settings';
 import {
   getAvailableLlmModels,
   testOllamaConnection,
+  testOpenAICompatConnection,
   getOllamaModels,
   type AvailableModel,
 } from '../../../lib/api';
@@ -57,6 +58,18 @@ export function AIProviderStep({ state, dispatch }: AIProviderStepProps) {
     }
   }, [state.provider, state.ollamaHost, checkOllamaConnection]);
 
+  // Check OpenAI Compatible connection
+  const checkOpenaiCompatConnection = useCallback(async (baseUrl: string, apiKey?: string) => {
+    if (!baseUrl.trim()) return;
+    dispatch({ type: 'SET_OPENAI_COMPAT_STATUS', status: 'checking' });
+    try {
+      await testOpenAICompatConnection(baseUrl, apiKey || undefined);
+      dispatch({ type: 'SET_OPENAI_COMPAT_STATUS', status: 'connected' });
+    } catch (e) {
+      dispatch({ type: 'SET_OPENAI_COMPAT_STATUS', status: 'error', error: String(e) });
+    }
+  }, [dispatch]);
+
   const handleTestConnection = async () => {
     if (!state.apiKey.trim()) return;
     dispatch({ type: 'SET_TESTING', value: true });
@@ -85,7 +98,7 @@ export function AIProviderStep({ state, dispatch }: AIProviderStepProps) {
       <div className="text-center mb-4">
         <h2 className="text-xl font-bold text-[var(--color-text-primary)] mb-1">AI Provider</h2>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Choose between cloud (OpenRouter) or local (Ollama) AI models
+          Choose your AI provider
         </p>
       </div>
 
@@ -94,15 +107,16 @@ export function AIProviderStep({ state, dispatch }: AIProviderStepProps) {
         <label className="block text-sm font-medium text-[var(--color-text-primary)]">Provider</label>
         <CustomSelect
           value={state.provider}
-          onChange={(v) => dispatch({ type: 'SET_PROVIDER', value: v as 'openrouter' | 'ollama' })}
+          onChange={(v) => dispatch({ type: 'SET_PROVIDER', value: v as 'openrouter' | 'ollama' | 'openai_compat' })}
           options={[
             { value: 'openrouter', label: 'OpenRouter (Cloud)' },
             { value: 'ollama', label: 'Ollama (Local)' },
+            { value: 'openai_compat', label: 'OpenAI Compatible' },
           ]}
         />
       </div>
 
-      {state.provider === 'openrouter' ? (
+      {state.provider === 'openrouter' && (
         <>
           {/* API Key */}
           <div className="space-y-2">
@@ -182,7 +196,9 @@ export function AIProviderStep({ state, dispatch }: AIProviderStepProps) {
             </div>
           )}
         </>
-      ) : (
+      )}
+
+      {state.provider === 'ollama' && (
         <>
           {/* Ollama configuration */}
           <div className="space-y-2">
@@ -228,6 +244,91 @@ export function AIProviderStep({ state, dispatch }: AIProviderStepProps) {
               </div>
             </div>
           )}
+        </>
+      )}
+
+      {state.provider === 'openai_compat' && (
+        <>
+          {/* Base URL */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-[var(--color-text-primary)]">Base URL</label>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              OpenAI-compatible API endpoint (e.g. http://localhost:8080/v1)
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={state.openaiCompatBaseUrl}
+                onChange={(e) => dispatch({ type: 'SET_OPENAI_COMPAT_BASE_URL', value: e.target.value })}
+                placeholder="http://localhost:8080/v1"
+                className="flex-1 px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+              <Button
+                variant="secondary"
+                onClick={() => checkOpenaiCompatConnection(state.openaiCompatBaseUrl, state.openaiCompatApiKey || undefined)}
+                disabled={!state.openaiCompatBaseUrl.trim() || state.openaiCompatStatus === 'checking'}
+              >
+                {state.openaiCompatStatus === 'checking' ? 'Testing...' : 'Test'}
+              </Button>
+            </div>
+            {state.openaiCompatStatus === 'connected' && (
+              <p className="text-sm text-green-500">Connected successfully</p>
+            )}
+            {state.openaiCompatStatus === 'error' && (
+              <p className="text-sm text-red-500">{state.openaiCompatError}</p>
+            )}
+          </div>
+
+          {/* API Key */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-[var(--color-text-primary)]">API Key (optional)</label>
+            <input
+              type="password"
+              value={state.openaiCompatApiKey}
+              onChange={(e) => dispatch({ type: 'SET_OPENAI_COMPAT_API_KEY', value: e.target.value })}
+              placeholder="sk-..."
+              className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+            />
+          </div>
+
+          {/* Model Configuration */}
+          <div className="space-y-3 p-4 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg">
+            <h3 className="text-sm font-medium text-[var(--color-text-primary)]">Model Configuration</h3>
+            <p className="text-xs text-[var(--color-text-secondary)]">Enter the exact model names your server expects.</p>
+
+            <div className="space-y-2">
+              <label className="block text-xs text-[var(--color-text-secondary)]">Embedding Model</label>
+              <input
+                type="text"
+                value={state.openaiCompatEmbeddingModel}
+                onChange={(e) => dispatch({ type: 'SET_OPENAI_COMPAT_EMBEDDING_MODEL', value: e.target.value })}
+                placeholder="text-embedding-3-small"
+                className="w-full px-3 py-2 bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs text-[var(--color-text-secondary)]">Embedding Dimension</label>
+              <input
+                type="number"
+                value={state.openaiCompatEmbeddingDimension}
+                onChange={(e) => dispatch({ type: 'SET_OPENAI_COMPAT_EMBEDDING_DIMENSION', value: e.target.value })}
+                placeholder="1536"
+                className="w-full px-3 py-2 bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs text-[var(--color-text-secondary)]">LLM Model (tagging, wiki, chat)</label>
+              <input
+                type="text"
+                value={state.openaiCompatLlmModel}
+                onChange={(e) => dispatch({ type: 'SET_OPENAI_COMPAT_LLM_MODEL', value: e.target.value })}
+                placeholder="meta-llama/Llama-3.1-8B-Instruct"
+                className="w-full px-3 py-2 bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+            </div>
+          </div>
         </>
       )}
 

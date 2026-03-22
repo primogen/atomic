@@ -57,10 +57,16 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         await setSetting('tagging_model', state.taggingModel);
         await setSetting('wiki_model', state.wikiModel);
         await setSetting('chat_model', state.chatModel);
-      } else {
+      } else if (state.provider === 'ollama') {
         await setSetting('ollama_host', state.ollamaHost);
         await setSetting('ollama_embedding_model', state.embeddingModel);
         await setSetting('ollama_llm_model', state.taggingModel);
+      } else if (state.provider === 'openai_compat') {
+        await setSetting('openai_compat_base_url', state.openaiCompatBaseUrl);
+        await setSetting('openai_compat_api_key', state.openaiCompatApiKey);
+        await setSetting('openai_compat_embedding_model', state.openaiCompatEmbeddingModel);
+        await setSetting('openai_compat_embedding_dimension', state.openaiCompatEmbeddingDimension);
+        await setSetting('openai_compat_llm_model', state.openaiCompatLlmModel);
       }
 
       await setSetting('auto_tagging_enabled', state.autoTaggingEnabled ? 'true' : 'false');

@@ -399,6 +399,7 @@ where
 
         let model = match provider_config.provider_type {
             ProviderType::Ollama => provider_config.llm_model().to_string(),
+            ProviderType::OpenAICompat => provider_config.llm_model().to_string(),
             ProviderType::OpenRouter => settings_map
                 .get("chat_model")
                 .cloned()

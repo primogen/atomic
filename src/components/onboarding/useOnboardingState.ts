@@ -21,7 +21,7 @@ export interface OnboardingState {
   isTestingServer: boolean;
 
   // Step 2: AI Provider
-  provider: 'openrouter' | 'ollama';
+  provider: 'openrouter' | 'ollama' | 'openai_compat';
   apiKey: string;
   embeddingModel: string;
   taggingModel: string;
@@ -39,6 +39,14 @@ export interface OnboardingState {
   ollamaError: string | undefined;
   ollamaModels: OllamaModel[];
   isLoadingOllamaModels: boolean;
+  // OpenAI Compatible
+  openaiCompatBaseUrl: string;
+  openaiCompatApiKey: string;
+  openaiCompatEmbeddingModel: string;
+  openaiCompatEmbeddingDimension: string;
+  openaiCompatLlmModel: string;
+  openaiCompatStatus: 'idle' | 'checking' | 'connected' | 'error';
+  openaiCompatError: string | null;
 
   // Step 4: Mobile setup
   mobileToken: string | null;
@@ -66,7 +74,7 @@ export type OnboardingAction =
   | { type: 'SET_SERVER_TEST'; result: 'success' | 'error' | null; error?: string }
   | { type: 'SET_TESTING_SERVER'; value: boolean }
   // AI Provider
-  | { type: 'SET_PROVIDER'; value: 'openrouter' | 'ollama' }
+  | { type: 'SET_PROVIDER'; value: 'openrouter' | 'ollama' | 'openai_compat' }
   | { type: 'SET_API_KEY'; value: string }
   | { type: 'SET_EMBEDDING_MODEL'; value: string }
   | { type: 'SET_TAGGING_MODEL'; value: string }
@@ -81,6 +89,13 @@ export type OnboardingAction =
   | { type: 'SET_OLLAMA_STATUS'; status: 'checking' | 'connected' | 'disconnected'; error?: string }
   | { type: 'SET_OLLAMA_MODELS'; models: OllamaModel[] }
   | { type: 'SET_LOADING_OLLAMA_MODELS'; value: boolean }
+  // OpenAI Compatible
+  | { type: 'SET_OPENAI_COMPAT_BASE_URL'; value: string }
+  | { type: 'SET_OPENAI_COMPAT_API_KEY'; value: string }
+  | { type: 'SET_OPENAI_COMPAT_EMBEDDING_MODEL'; value: string }
+  | { type: 'SET_OPENAI_COMPAT_EMBEDDING_DIMENSION'; value: string }
+  | { type: 'SET_OPENAI_COMPAT_LLM_MODEL'; value: string }
+  | { type: 'SET_OPENAI_COMPAT_STATUS'; status: 'idle' | 'checking' | 'connected' | 'error'; error?: string }
   // Mobile
   | { type: 'SET_MOBILE_TOKEN'; token: string | null }
   // Data loading
@@ -116,6 +131,13 @@ const initialState: OnboardingState = {
   ollamaError: undefined,
   ollamaModels: [],
   isLoadingOllamaModels: false,
+  openaiCompatBaseUrl: '',
+  openaiCompatApiKey: '',
+  openaiCompatEmbeddingModel: '',
+  openaiCompatEmbeddingDimension: '1536',
+  openaiCompatLlmModel: '',
+  openaiCompatStatus: 'idle',
+  openaiCompatError: null,
   mobileToken: null,
   mobileTokenName: 'mobile-setup',
   feedUrl: '',
@@ -173,6 +195,18 @@ function reducer(state: OnboardingState, action: OnboardingAction): OnboardingSt
       return { ...state, ollamaModels: action.models };
     case 'SET_LOADING_OLLAMA_MODELS':
       return { ...state, isLoadingOllamaModels: action.value };
+    case 'SET_OPENAI_COMPAT_BASE_URL':
+      return { ...state, openaiCompatBaseUrl: action.value };
+    case 'SET_OPENAI_COMPAT_API_KEY':
+      return { ...state, openaiCompatApiKey: action.value };
+    case 'SET_OPENAI_COMPAT_EMBEDDING_MODEL':
+      return { ...state, openaiCompatEmbeddingModel: action.value };
+    case 'SET_OPENAI_COMPAT_EMBEDDING_DIMENSION':
+      return { ...state, openaiCompatEmbeddingDimension: action.value };
+    case 'SET_OPENAI_COMPAT_LLM_MODEL':
+      return { ...state, openaiCompatLlmModel: action.value };
+    case 'SET_OPENAI_COMPAT_STATUS':
+      return { ...state, openaiCompatStatus: action.status, openaiCompatError: action.error || null };
     case 'SET_MOBILE_TOKEN':
       return { ...state, mobileToken: action.token };
     case 'SET_FEED_URL':

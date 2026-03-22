@@ -11,6 +11,7 @@ import { THEMES, Theme } from '../../hooks/useTheme';
 import {
   getAvailableLlmModels,
   testOllamaConnection,
+  testOpenAICompatConnection,
   getOllamaModels,
   importObsidianVault,
   getMcpConfig,
@@ -62,7 +63,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [theme, setTheme] = useState<Theme>('obsidian');
 
   // Provider selection
-  const [provider, setProvider] = useState<'openrouter' | 'ollama'>('openrouter');
+  const [provider, setProvider] = useState<'openrouter' | 'ollama' | 'openai_compat'>('openrouter');
 
   // OpenRouter settings
   const [apiKey, setApiKey] = useState('');
@@ -70,6 +71,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+
+  // OpenAI Compatible settings
+  const [openaiCompatBaseUrl, setOpenaiCompatBaseUrl] = useState('');
+  const [openaiCompatApiKey, setOpenaiCompatApiKey] = useState('');
+  const [openaiCompatShowApiKey, setOpenaiCompatShowApiKey] = useState(false);
+  const [openaiCompatEmbeddingModel, setOpenaiCompatEmbeddingModel] = useState('');
+  const [openaiCompatEmbeddingDimension, setOpenaiCompatEmbeddingDimension] = useState('1536');
+  const [openaiCompatLlmModel, setOpenaiCompatLlmModel] = useState('');
+  const [openaiCompatStatus, setOpenaiCompatStatus] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle');
+  const [openaiCompatError, setOpenaiCompatError] = useState<string | null>(null);
 
   // Ollama settings
   const [ollamaHost, setOllamaHost] = useState('http://127.0.0.1:11434');
@@ -440,7 +451,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   // Load settings into state
   useEffect(() => {
-    const p = settings.provider as 'openrouter' | 'ollama' | undefined;
+    const p = settings.provider as 'openrouter' | 'ollama' | 'openai_compat' | undefined;
     setTheme((settings.theme as Theme) || 'obsidian');
     setProvider(p || 'openrouter');
     setApiKey(settings.openrouter_api_key || '');
@@ -453,6 +464,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setOllamaHost(settings.ollama_host || 'http://127.0.0.1:11434');
     setOllamaEmbeddingModel(settings.ollama_embedding_model || 'nomic-embed-text');
     setOllamaLlmModel(settings.ollama_llm_model || 'llama3.2');
+    setOpenaiCompatBaseUrl(settings.openai_compat_base_url || '');
+    setOpenaiCompatApiKey(settings.openai_compat_api_key || '');
+    setOpenaiCompatEmbeddingModel(settings.openai_compat_embedding_model || '');
+    setOpenaiCompatEmbeddingDimension(settings.openai_compat_embedding_dimension || '1536');
+    setOpenaiCompatLlmModel(settings.openai_compat_llm_model || '');
   }, [settings]);
 
   // Check Ollama connection when provider is ollama or host changes
@@ -506,11 +522,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setPendingEmbeddingChange({ key: 'ollama_embedding_model', value, label: value });
   };
 
+  const handleOpenaiCompatEmbeddingModelChange = (value: string) => {
+    setPendingEmbeddingChange({ key: 'openai_compat_embedding_model', value, label: value });
+  };
+
+  const handleOpenaiCompatEmbeddingDimensionChange = (value: string) => {
+    setPendingEmbeddingChange({ key: 'openai_compat_embedding_dimension', value, label: `${value} dimensions` });
+  };
+
   const confirmEmbeddingChange = async () => {
     if (!pendingEmbeddingChange) return;
     const { key, value } = pendingEmbeddingChange;
     if (key === 'embedding_model') setEmbeddingModel(value);
     if (key === 'ollama_embedding_model') setOllamaEmbeddingModel(value);
+    if (key === 'openai_compat_embedding_model') setOpenaiCompatEmbeddingModel(value);
+    if (key === 'openai_compat_embedding_dimension') setOpenaiCompatEmbeddingDimension(value);
     await autoSave(key, value);
     setPendingEmbeddingChange(null);
   };
@@ -519,8 +545,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setPendingEmbeddingChange(null);
   };
 
+  // Test OpenAI Compatible connection
+  const checkOpenaiCompatConnection = useCallback(async (baseUrl: string, apiKey?: string) => {
+    if (!baseUrl.trim()) return;
+    setOpenaiCompatStatus('checking');
+    setOpenaiCompatError(null);
+    try {
+      await testOpenAICompatConnection(baseUrl, apiKey || undefined);
+      setOpenaiCompatStatus('connected');
+    } catch (e) {
+      setOpenaiCompatStatus('error');
+      setOpenaiCompatError(String(e));
+    }
+  }, []);
+
   // Handle provider change — test connection automatically
-  const handleProviderChange = async (value: 'openrouter' | 'ollama') => {
+  const handleProviderChange = async (value: 'openrouter' | 'ollama' | 'openai_compat') => {
     setProvider(value);
     await autoSave('provider', value);
     // Test connection for new provider
@@ -537,6 +577,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       } finally {
         setIsTesting(false);
       }
+    } else if (value === 'openai_compat' && openaiCompatBaseUrl.trim()) {
+      checkOpenaiCompatConnection(openaiCompatBaseUrl, openaiCompatApiKey || undefined);
     }
   };
 
@@ -729,14 +771,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                       AI Provider
                     </label>
                     <p className="text-xs text-[var(--color-text-secondary)]">
-                      Choose between cloud (OpenRouter) or local (Ollama) AI models
+                      Choose your AI provider
                     </p>
                     <CustomSelect
                       value={provider}
-                      onChange={(v) => handleProviderChange(v as 'openrouter' | 'ollama')}
+                      onChange={(v) => handleProviderChange(v as 'openrouter' | 'ollama' | 'openai_compat')}
                       options={[
                         { value: 'openrouter', label: 'OpenRouter (Cloud)' },
                         { value: 'ollama', label: 'Ollama (Local)' },
+                        { value: 'openai_compat', label: 'OpenAI Compatible' },
                       ]}
                     />
                     {/* Connection status — shown inline after provider */}
@@ -986,6 +1029,155 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           </Button>
                         </div>
                       )}
+                    </>
+                  )}
+
+                  {/* OpenAI Compatible Settings */}
+                  {provider === 'openai_compat' && (
+                    <>
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                          Base URL
+                        </label>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          OpenAI-compatible API endpoint (e.g. http://localhost:8080/v1)
+                        </p>
+                        <input
+                          type="text"
+                          value={openaiCompatBaseUrl}
+                          onChange={(e) => setOpenaiCompatBaseUrl(e.target.value)}
+                          onBlur={() => {
+                            autoSave('openai_compat_base_url', openaiCompatBaseUrl);
+                            if (openaiCompatBaseUrl.trim()) {
+                              checkOpenaiCompatConnection(openaiCompatBaseUrl, openaiCompatApiKey || undefined);
+                            }
+                          }}
+                          placeholder="http://localhost:8080/v1"
+                          className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
+                        />
+                        {openaiCompatStatus === 'checking' && (
+                          <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                            Testing connection...
+                          </div>
+                        )}
+                        {openaiCompatStatus === 'connected' && (
+                          <div className="flex items-center gap-2 text-sm text-green-500">
+                            <div className="w-2 h-2 rounded-full bg-green-500" />
+                            Connected
+                          </div>
+                        )}
+                        {openaiCompatStatus === 'error' && (
+                          <div className="flex items-center gap-2 text-sm text-red-500">
+                            <div className="w-2 h-2 rounded-full bg-red-500" />
+                            {openaiCompatError || 'Connection failed'}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                          API Key
+                        </label>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          Optional. Required if your server uses Bearer token auth.
+                        </p>
+                        <div className="relative">
+                          <input
+                            type={openaiCompatShowApiKey ? 'text' : 'password'}
+                            value={openaiCompatApiKey}
+                            onChange={(e) => setOpenaiCompatApiKey(e.target.value)}
+                            onBlur={() => autoSave('openai_compat_api_key', openaiCompatApiKey)}
+                            placeholder="sk-..."
+                            className="w-full px-3 py-2 pr-10 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setOpenaiCompatShowApiKey(!openaiCompatShowApiKey)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                          >
+                            {openaiCompatShowApiKey ? (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                              </svg>
+                            ) : (
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4 pt-2">
+                        <div className="text-sm font-medium text-[var(--color-text-primary)]">Model Configuration</div>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          Enter the exact model names your server expects.
+                        </p>
+
+                        {/* Embedding Model */}
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                            Embedding Model
+                          </label>
+                          <input
+                            type="text"
+                            value={openaiCompatEmbeddingModel}
+                            onChange={(e) => setOpenaiCompatEmbeddingModel(e.target.value)}
+                            onBlur={() => {
+                              if (openaiCompatEmbeddingModel !== (settings.openai_compat_embedding_model || '')) {
+                                handleOpenaiCompatEmbeddingModelChange(openaiCompatEmbeddingModel);
+                              }
+                            }}
+                            placeholder="text-embedding-3-small"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
+                          />
+                        </div>
+
+                        {/* Embedding Dimension */}
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                            Embedding Dimension
+                          </label>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Vector dimension of your embedding model (e.g. 1536 for text-embedding-3-small)
+                          </p>
+                          <input
+                            type="number"
+                            value={openaiCompatEmbeddingDimension}
+                            onChange={(e) => setOpenaiCompatEmbeddingDimension(e.target.value)}
+                            onBlur={() => {
+                              if (openaiCompatEmbeddingDimension !== (settings.openai_compat_embedding_dimension || '1536')) {
+                                handleOpenaiCompatEmbeddingDimensionChange(openaiCompatEmbeddingDimension);
+                              }
+                            }}
+                            placeholder="1536"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
+                          />
+                        </div>
+
+                        {/* LLM Model */}
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                            LLM Model
+                          </label>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Used for tagging, wiki generation, and chat
+                          </p>
+                          <input
+                            type="text"
+                            value={openaiCompatLlmModel}
+                            onChange={(e) => setOpenaiCompatLlmModel(e.target.value)}
+                            onBlur={() => autoSave('openai_compat_llm_model', openaiCompatLlmModel)}
+                            placeholder="meta-llama/Llama-3.1-8B-Instruct"
+                            className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150"
+                          />
+                        </div>
+                      </div>
                     </>
                   )}
                 </>

@@ -4,6 +4,7 @@
 pub mod error;
 pub mod models;
 pub mod ollama;
+pub mod openai_compat;
 pub mod openrouter;
 pub mod traits;
 pub mod types;
@@ -14,6 +15,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub use error::ProviderError;
 pub use models::{fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache, AvailableModel};
 pub use ollama::OllamaProvider;
+pub use openai_compat::OpenAICompatProvider;
 pub use openrouter::OpenRouterProvider;
 pub use traits::{EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, StreamingLlmProvider};
 
@@ -22,12 +24,14 @@ pub use traits::{EmbeddingConfig, EmbeddingProvider, LlmConfig, LlmProvider, Str
 pub enum ProviderType {
     OpenRouter,
     Ollama,
+    OpenAICompat,
 }
 
 impl ProviderType {
     pub fn from_string(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "ollama" => ProviderType::Ollama,
+            "openai_compat" => ProviderType::OpenAICompat,
             _ => ProviderType::OpenRouter,
         }
     }
@@ -45,6 +49,12 @@ pub struct ProviderConfig {
     pub ollama_host: String,
     pub ollama_embedding_model: String,
     pub ollama_llm_model: String,
+    // OpenAI-compatible settings
+    pub openai_compat_base_url: String,
+    pub openai_compat_api_key: Option<String>,
+    pub openai_compat_embedding_model: String,
+    pub openai_compat_llm_model: String,
+    pub openai_compat_embedding_dimension: usize,
 }
 
 impl ProviderConfig {
@@ -71,6 +81,21 @@ impl ProviderConfig {
             ollama_llm_model: settings.get("ollama_llm_model")
                 .cloned()
                 .unwrap_or_else(|| "llama3.2".to_string()),
+            openai_compat_base_url: settings.get("openai_compat_base_url")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_api_key: settings.get("openai_compat_api_key")
+                .cloned()
+                .filter(|k| !k.is_empty()),
+            openai_compat_embedding_model: settings.get("openai_compat_embedding_model")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_llm_model: settings.get("openai_compat_llm_model")
+                .cloned()
+                .unwrap_or_default(),
+            openai_compat_embedding_dimension: settings.get("openai_compat_embedding_dimension")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1536),
         }
     }
 
@@ -79,6 +104,7 @@ impl ProviderConfig {
         match self.provider_type {
             ProviderType::OpenRouter => &self.openrouter_embedding_model,
             ProviderType::Ollama => &self.ollama_embedding_model,
+            ProviderType::OpenAICompat => &self.openai_compat_embedding_model,
         }
     }
 
@@ -87,6 +113,7 @@ impl ProviderConfig {
         match self.provider_type {
             ProviderType::OpenRouter => &self.openrouter_llm_model,
             ProviderType::Ollama => &self.ollama_llm_model,
+            ProviderType::OpenAICompat => &self.openai_compat_llm_model,
         }
     }
 
@@ -103,6 +130,7 @@ impl ProviderConfig {
             ProviderType::Ollama => {
                 ollama::get_embedding_dimension(&self.ollama_embedding_model)
             }
+            ProviderType::OpenAICompat => self.openai_compat_embedding_dimension,
         }
     }
 }
@@ -118,6 +146,15 @@ pub fn create_embedding_provider(config: &ProviderConfig) -> Result<Arc<dyn Embe
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
         }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
+        }
     }
 }
 
@@ -132,6 +169,15 @@ pub fn create_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn LlmProvide
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
         }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
+        }
     }
 }
 
@@ -145,6 +191,15 @@ pub fn create_streaming_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn 
         }
         ProviderType::Ollama => {
             Ok(Arc::new(OllamaProvider::new(Some(config.ollama_host.clone()))))
+        }
+        ProviderType::OpenAICompat => {
+            if config.openai_compat_base_url.is_empty() {
+                return Err(ProviderError::Configuration("OpenAI Compatible base URL not configured".to_string()));
+            }
+            Ok(Arc::new(OpenAICompatProvider::new(
+                config.openai_compat_base_url.clone(),
+                config.openai_compat_api_key.clone(),
+            )))
         }
     }
 }

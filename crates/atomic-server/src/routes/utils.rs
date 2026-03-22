@@ -34,6 +34,7 @@ pub async fn compact_tags(db: Db) -> HttpResponse {
         let provider_config = atomic_core::ProviderConfig::from_settings(&settings_map);
         let model = match provider_config.provider_type {
             atomic_core::ProviderType::Ollama => provider_config.llm_model().to_string(),
+            atomic_core::ProviderType::OpenAICompat => provider_config.llm_model().to_string(),
             atomic_core::ProviderType::OpenRouter => settings_map
                 .get("tagging_model")
                 .cloned()

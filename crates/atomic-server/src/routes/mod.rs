@@ -86,6 +86,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::post().to(settings::test_openrouter_connection),
     );
     cfg.route("/settings/models", web::get().to(settings::get_available_llm_models));
+    cfg.route(
+        "/settings/test-openai-compat",
+        web::post().to(settings::test_openai_compat_connection),
+    );
 
     // Embedding management
     cfg.route(

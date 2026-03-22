@@ -74,6 +74,7 @@ pub async fn verify_provider_configured(db: Db) -> HttpResponse {
             .map(|k| !k.is_empty())
             .unwrap_or(false),
         atomic_core::ProviderType::Ollama => !config.ollama_host.is_empty(),
+        atomic_core::ProviderType::OpenAICompat => !config.openai_compat_base_url.is_empty(),
     };
 
     HttpResponse::Ok().json(serde_json::json!({"configured": configured}))

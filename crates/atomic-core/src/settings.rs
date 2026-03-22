@@ -21,6 +21,10 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("wiki_strategy", "centroid"),
     ("chat_model", "anthropic/claude-sonnet-4.5"),
     ("auto_tagging_enabled", "true"),
+    ("openai_compat_base_url", ""),
+    ("openai_compat_embedding_model", ""),
+    ("openai_compat_llm_model", ""),
+    ("openai_compat_embedding_dimension", "1536"),
 ];
 
 /// Migrate settings - add any missing default settings

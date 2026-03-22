@@ -1207,6 +1207,7 @@ impl AtomicCore {
         let config = ProviderConfig::from_settings(&settings_map);
         let model = match config.provider_type {
             ProviderType::Ollama => config.llm_model().to_string(),
+            ProviderType::OpenAICompat => config.llm_model().to_string(),
             ProviderType::OpenRouter => settings_map
                 .get("wiki_model")
                 .cloned()
@@ -1849,7 +1850,7 @@ impl AtomicCore {
     where
         F: Fn(EmbeddingEvent) + Send + Sync + Clone + 'static,
     {
-        let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model"];
+        let dimension_affecting_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
         let mut dimension_changed = false;
 
         {
@@ -1952,6 +1953,7 @@ impl AtomicCore {
                 Ok(config.openrouter_api_key.as_ref().map_or(false, |k| !k.is_empty()))
             }
             ProviderType::Ollama => Ok(!config.ollama_host.is_empty()),
+            ProviderType::OpenAICompat => Ok(!config.openai_compat_base_url.is_empty()),
         }
     }
 

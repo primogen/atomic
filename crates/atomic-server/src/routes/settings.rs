@@ -26,7 +26,7 @@ pub async fn set_setting(
     let value = body.into_inner().value;
 
     // Handle dimension-affecting settings via set_setting_with_reembed (avoids deadlock)
-    let dimension_keys = ["provider", "embedding_model", "ollama_embedding_model"];
+    let dimension_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
     if dimension_keys.contains(&key.as_str()) {
         let core = db.0;
         let on_event = crate::event_bridge::embedding_event_callback(state.event_tx.clone());
@@ -82,6 +82,45 @@ pub async fn test_openrouter_connection(
         }
         Err(e) => HttpResponse::BadGateway().json(serde_json::json!({
             "error": format!("Network error: {}", e)
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TestOpenAICompatBody {
+    pub base_url: String,
+    pub api_key: Option<String>,
+}
+
+pub async fn test_openai_compat_connection(
+    body: web::Json<TestOpenAICompatBody>,
+) -> HttpResponse {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut req = client.get(format!("{}/models", body.base_url));
+
+    if let Some(ref api_key) = body.api_key {
+        if !api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            HttpResponse::Ok().json(serde_json::json!({"success": true}))
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("API error ({}): {}", status, body)
+            }))
+        }
+        Err(e) => HttpResponse::BadGateway().json(serde_json::json!({
+            "error": format!("Connection failed: {}", e)
         })),
     }
 }
