@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
   proxy:
-    image: nginx:1.27-bookworm
+    image: nginx:1.28-bookworm
     ports:
       - "8080:80"
     volumes:
