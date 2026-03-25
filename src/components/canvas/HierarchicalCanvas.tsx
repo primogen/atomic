@@ -115,7 +115,7 @@ export function HierarchicalCanvas() {
           id: node.id,
           title: node.label,
           snippet: '',
-          tags: (node.dominant_tags || []).map(name => ({ id: name, name })),
+          tags: (node.dominant_tags || []).map(name => ({ id: name, name, parent_id: null, created_at: '' })),
           source_url: null,
           source: null,
           published_at: null,
