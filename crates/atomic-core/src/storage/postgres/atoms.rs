@@ -326,44 +326,46 @@ impl AtomStore for PostgresStorage {
         let source = request.source_url.as_deref().map(parse_source);
         let embedding_status = "pending";
 
-        db_err!(
-            sqlx::query(
-                "UPDATE atoms SET content = $1, source_url = $2, source = $3, published_at = $4,
-                 updated_at = $5, embedding_status = $6, title = $7, snippet = $8
-                 WHERE id = $9"
-            )
-            .bind(&request.content)
-            .bind(&request.source_url)
-            .bind(&source)
-            .bind(&request.published_at)
-            .bind(updated_at)
-            .bind(embedding_status)
-            .bind(&title)
-            .bind(&snippet)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-        )?;
+        let mut tx = self.pool.begin().await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        // Replace tags if provided
+        sqlx::query(
+            "UPDATE atoms SET content = $1, source_url = $2, source = $3, published_at = $4,
+             updated_at = $5, embedding_status = $6, title = $7, snippet = $8
+             WHERE id = $9"
+        )
+        .bind(&request.content)
+        .bind(&request.source_url)
+        .bind(&source)
+        .bind(&request.published_at)
+        .bind(updated_at)
+        .bind(embedding_status)
+        .bind(&title)
+        .bind(&snippet)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
         if let Some(ref tag_ids) = request.tag_ids {
-            db_err!(
-                sqlx::query("DELETE FROM atom_tags WHERE atom_id = $1")
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await
-            )?;
+            sqlx::query("DELETE FROM atom_tags WHERE atom_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
             for tag_id in tag_ids {
-                db_err!(
-                    sqlx::query("INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2)")
-                        .bind(id)
-                        .bind(tag_id)
-                        .execute(&self.pool)
-                        .await
-                )?;
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2)")
+                    .bind(id)
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             }
         }
+
+        tx.commit().await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         // Re-fetch the atom
         let row: (
@@ -488,10 +490,15 @@ impl AtomStore for PostgresStorage {
         }
         let mut bind_values: Vec<BindVal> = Vec::new();
 
-        // Tag filter
+        // Tag filter — recursive CTE to include full descendant subtree
         if let Some(ref tid) = params.tag_id {
             where_clauses.push(format!(
-                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ${p} OR parent_id = ${p}))",
+                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (\
+                 WITH RECURSIVE descendant_tags(id) AS (\
+                   SELECT ${p}::text \
+                   UNION ALL \
+                   SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id\
+                 ) SELECT id FROM descendant_tags))",
                 p = param_idx
             ));
             bind_values.push(BindVal::Str(tid.clone()));
@@ -549,9 +556,14 @@ impl AtomStore for PostgresStorage {
 
             if has_children {
                 let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(DISTINCT at.atom_id)
+                    "WITH RECURSIVE descendant_tags(id) AS (
+                       SELECT $1::text
+                       UNION ALL
+                       SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                     )
+                     SELECT COUNT(DISTINCT at.atom_id)
                      FROM atom_tags at
-                     WHERE at.tag_id IN (SELECT id FROM tags WHERE id = $1 OR parent_id = $1)",
+                     WHERE at.tag_id IN (SELECT id FROM descendant_tags)",
                 )
                 .bind(tid)
                 .fetch_one(&self.pool)
@@ -576,7 +588,12 @@ impl AtomStore for PostgresStorage {
 
             if let Some(ref tid) = params.tag_id {
                 count_wheres.push(format!(
-                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ${p} OR parent_id = ${p}))",
+                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (\
+                     WITH RECURSIVE descendant_tags(id) AS (\
+                       SELECT ${p}::text \
+                       UNION ALL \
+                       SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id\
+                     ) SELECT id FROM descendant_tags))",
                     p = ci
                 ));
                 count_binds.push(BindVal::Str(tid.clone()));

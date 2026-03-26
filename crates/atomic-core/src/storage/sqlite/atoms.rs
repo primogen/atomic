@@ -231,34 +231,42 @@ impl SqliteStorage {
                 .lock()
                 .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
 
-            conn.execute(
-                "UPDATE atoms SET content = ?1, source_url = ?2, source = ?3, published_at = ?4, updated_at = ?5, embedding_status = ?6,
-                 title = ?7, snippet = ?8
-                 WHERE id = ?9",
-                (
-                    &request.content,
-                    &request.source_url,
-                    &source,
-                    &request.published_at,
-                    updated_at,
-                    &embedding_status,
-                    &title,
-                    &snippet,
-                    id,
-                ),
-            )?;
+            conn.execute_batch("BEGIN")?;
 
-            // Remove existing tags and add new ones (only if tag_ids provided)
-            if let Some(ref tag_ids) = request.tag_ids {
-                conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])?;
+            if let Err(e) = (|| -> Result<(), AtomicCoreError> {
+                conn.execute(
+                    "UPDATE atoms SET content = ?1, source_url = ?2, source = ?3, published_at = ?4, updated_at = ?5, embedding_status = ?6,
+                     title = ?7, snippet = ?8
+                     WHERE id = ?9",
+                    (
+                        &request.content,
+                        &request.source_url,
+                        &source,
+                        &request.published_at,
+                        updated_at,
+                        &embedding_status,
+                        &title,
+                        &snippet,
+                        id,
+                    ),
+                )?;
 
-                for tag_id in tag_ids {
-                    conn.execute(
-                        "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
-                        (id, tag_id),
-                    )?;
+                if let Some(ref tag_ids) = request.tag_ids {
+                    conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])?;
+                    for tag_id in tag_ids {
+                        conn.execute(
+                            "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
+                            (id, tag_id),
+                        )?;
+                    }
                 }
+                Ok(())
+            })() {
+                conn.execute_batch("ROLLBACK").ok();
+                return Err(e);
             }
+
+            conn.execute_batch("COMMIT")?;
         }
 
         // Get the updated atom
@@ -374,10 +382,15 @@ impl SqliteStorage {
         let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
 
-        // Tag filter
+        // Tag filter — recursive CTE to include full descendant subtree
         if let Some(ref tid) = params.tag_id {
             where_clauses.push(format!(
-                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
+                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (\
+                 WITH RECURSIVE descendant_tags(id) AS (\
+                   SELECT ?{p} \
+                   UNION ALL \
+                   SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id\
+                 ) SELECT id FROM descendant_tags))",
                 p = param_idx
             ));
             bind_values.push(Box::new(tid.clone()));
@@ -433,9 +446,14 @@ impl SqliteStorage {
             )?;
             if has_children {
                 conn.query_row(
-                    "SELECT COUNT(DISTINCT at.atom_id)
+                    "WITH RECURSIVE descendant_tags(id) AS (
+                       SELECT ?1
+                       UNION ALL
+                       SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                     )
+                     SELECT COUNT(DISTINCT at.atom_id)
                      FROM atom_tags at
-                     WHERE at.tag_id IN (SELECT id FROM tags WHERE id = ?1 OR parent_id = ?1)",
+                     WHERE at.tag_id IN (SELECT id FROM descendant_tags)",
                     rusqlite::params![tid],
                     |row| row.get(0),
                 )?
@@ -454,7 +472,12 @@ impl SqliteStorage {
 
             if let Some(ref tid) = params.tag_id {
                 count_wheres.push(format!(
-                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ?{p} OR parent_id = ?{p}))",
+                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (\
+                     WITH RECURSIVE descendant_tags(id) AS (\
+                       SELECT ?{p} \
+                       UNION ALL \
+                       SELECT t.id FROM tags t INNER JOIN descendant_tags dt ON t.parent_id = dt.id\
+                     ) SELECT id FROM descendant_tags))",
                     p = ci
                 ));
                 count_binds.push(Box::new(tid.clone()));
