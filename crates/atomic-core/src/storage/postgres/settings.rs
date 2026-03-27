@@ -114,7 +114,7 @@ impl TokenStore for PostgresStorage {
 
     async fn list_api_tokens(&self) -> StorageResult<Vec<ApiTokenInfo>> {
         let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, bool)>(
-            "SELECT id, name, token_prefix, created_at, last_used_at, is_revoked::int::boolean
+            "SELECT id, name, token_prefix, created_at, last_used_at, (is_revoked != 0)
              FROM api_tokens ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
@@ -143,7 +143,7 @@ impl TokenStore for PostgresStorage {
         let hash = hash_token(raw_token);
 
         let row = sqlx::query_as::<_, (String, String, String, String, Option<String>, bool)>(
-            "SELECT id, name, token_prefix, created_at, last_used_at, is_revoked::int::boolean
+            "SELECT id, name, token_prefix, created_at, last_used_at, (is_revoked != 0)
              FROM api_tokens WHERE token_hash = $1 AND is_revoked = 0",
         )
         .bind(&hash)
@@ -365,5 +365,44 @@ impl DatabaseStore for PostgresStorage {
         id.ok_or_else(|| {
             AtomicCoreError::Configuration("No default database configured".to_string())
         })
+    }
+
+    async fn purge_database_data(&self, db_id: &str) -> StorageResult<()> {
+        // Delete from all per-database tables in dependency order (children first).
+        // Tables with FKs to other per-db tables are deleted first to avoid constraint violations.
+        let tables = [
+            "chat_citations",
+            "chat_tool_calls",
+            "chat_messages",
+            "conversation_tags",
+            "conversations",
+            "wiki_citations",
+            "wiki_links",
+            "wiki_article_versions",
+            "wiki_articles",
+            "feed_items",
+            "feed_tags",
+            "feeds",
+            "semantic_edges",
+            "atom_clusters",
+            "tag_embeddings",
+            "atom_positions",
+            "atom_chunks",
+            "atom_tags",
+            "atoms",
+            "tags",
+        ];
+
+        for table in &tables {
+            sqlx::query(&format!("DELETE FROM {} WHERE db_id = $1", table))
+                .bind(db_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(
+                    format!("Failed to purge {} for db_id {}: {}", table, db_id, e)
+                ))?;
+        }
+
+        Ok(())
     }
 }

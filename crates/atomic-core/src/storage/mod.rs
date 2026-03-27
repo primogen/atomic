@@ -389,6 +389,8 @@ dispatch! {
         => sqlite: delete_database_sync, pg_trait: DatabaseStore, pg_method: delete_database;
     fn get_default_database_id_sync(&self) -> Result<String, AtomicCoreError>
         => sqlite: get_default_database_id_sync, pg_trait: DatabaseStore, pg_method: get_default_database_id;
+    fn purge_database_data_sync(&self, db_id: &str) -> Result<(), AtomicCoreError>
+        => sqlite: purge_database_data_sync, pg_trait: DatabaseStore, pg_method: purge_database_data;
 
     // ---- SettingsStore ----
     fn get_all_settings_sync(&self) -> Result<HashMap<String, String>, AtomicCoreError>

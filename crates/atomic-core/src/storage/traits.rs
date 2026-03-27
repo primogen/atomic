@@ -696,6 +696,10 @@ pub trait DatabaseStore: Send + Sync {
 
     /// Get the ID of the default database.
     async fn get_default_database_id(&self) -> StorageResult<String>;
+
+    /// Purge all data for a logical database (delete all rows with the given db_id).
+    /// Called after deleting the database entry to avoid orphaned data.
+    async fn purge_database_data(&self, db_id: &str) -> StorageResult<()>;
 }
 
 // ==================== Supertrait ====================

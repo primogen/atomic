@@ -286,8 +286,8 @@ impl DatabaseManager {
                 }
             }
 
-            // In Postgres mode, per-database data is scoped by db_id — no files to delete.
-            // TODO: Consider cleaning up rows with this db_id from all tables.
+            // Purge all per-database data rows for this db_id
+            storage.purge_database_data_sync(id)?;
             return Ok(());
         }
 
