@@ -16,7 +16,11 @@ struct AtomicApp: App {
                 }
             }
             .environment(networkMonitor)
-            .onAppear { networkMonitor.start() }
+            .onAppear {
+                networkMonitor.start()
+                SharedConfig.serverURL = serverURL
+                SharedConfig.apiToken = apiToken
+            }
         }
     }
 
@@ -175,6 +179,8 @@ struct SetupView: View {
             _ = try await client.listAtoms(limit: 1, offset: 0)
             UserDefaults.standard.set(urlInput, forKey: "serverURL")
             UserDefaults.standard.set(tokenInput, forKey: "apiToken")
+            SharedConfig.serverURL = urlInput
+            SharedConfig.apiToken = tokenInput
             serverURL = urlInput
             apiToken = tokenInput
         } catch {

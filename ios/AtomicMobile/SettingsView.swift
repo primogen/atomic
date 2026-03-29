@@ -93,6 +93,9 @@ struct SettingsView: View {
     private func disconnect() {
         UserDefaults.standard.removeObject(forKey: "serverURL")
         UserDefaults.standard.removeObject(forKey: "apiToken")
+        SharedConfig.serverURL = nil
+        SharedConfig.apiToken = nil
+        SharedConfig.databaseId = nil
         serverURL = ""
         apiToken = ""
         dismiss()

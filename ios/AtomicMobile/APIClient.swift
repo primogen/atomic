@@ -6,7 +6,7 @@ final class APIClient: Sendable {
     let token: String
     /// Optional database ID to scope requests via X-Atomic-Database header.
     /// When nil, the server uses its active/default database.
-    var databaseId: String?
+    nonisolated(unsafe) var databaseId: String?
 
     init(baseURL: URL, token: String, databaseId: String? = nil) {
         self.baseURL = baseURL

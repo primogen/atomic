@@ -73,7 +73,21 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
                 }
             }
-            .navigationTitle(selectedTagName ?? "Atomic")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    if let tagName = selectedTagName {
+                        Text(tagName)
+                            .font(.headline)
+                            .foregroundStyle(Theme.textPrimary)
+                    } else {
+                        Image("AppIcon")
+                            .resizable()
+                            .frame(width: 28, height: 28)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
             .toolbarBackground(Theme.bg, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
