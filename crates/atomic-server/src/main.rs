@@ -7,7 +7,7 @@ mod config;
 
 use actix_cors::Cors;
 use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
-use atomic_server::{auth, event_bridge, mcp, mcp_auth, routes, state::AppState, ws, Scalar, Servable};
+use atomic_server::{auth, event_bridge, log_buffer::LogBuffer, mcp, mcp_auth, routes, state::AppState, ws, Scalar, Servable};
 use utoipa::OpenApi;
 use clap::Parser;
 use config::{Cli, Command, TokenAction};
@@ -25,11 +25,15 @@ async fn health() -> impl Responder {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "atomic_core=info,atomic_server=info,warn".parse().unwrap())
-        )
+    let log_buffer = LogBuffer::new(1000);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "atomic_core=info,atomic_server=info,warn".parse().unwrap());
+
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt::layer()) // console output
+        .with(fmt::layer().with_ansi(false).with_writer(log_buffer.make_writer())) // ring buffer
         .init();
 
     let cli = Cli::parse();
@@ -53,11 +57,11 @@ async fn main() -> std::io::Result<()> {
                 std::env::var("FLY_APP_NAME").ok().map(|name| format!("https://{name}.fly.dev"))
             });
             let manager = create_manager(&data_dir, &storage, database_url.as_deref());
-            run_server(manager, &data_dir.display().to_string(), port, &bind, public_url).await
+            run_server(manager, &data_dir.display().to_string(), port, &bind, public_url, log_buffer).await
         }
         None => {
             let manager = create_manager(&data_dir, "sqlite", None);
-            run_server(manager, &data_dir.display().to_string(), 8080, "127.0.0.1", None).await
+            run_server(manager, &data_dir.display().to_string(), 8080, "127.0.0.1", None, log_buffer).await
         }
     }
 }
@@ -153,6 +157,7 @@ async fn run_server(
     port: u16,
     bind: &str,
     public_url: Option<String>,
+    log_buffer: LogBuffer,
 ) -> std::io::Result<()> {
     let manager = Arc::new(manager);
 
@@ -186,6 +191,7 @@ async fn run_server(
         manager: Arc::clone(&manager),
         event_tx: event_tx.clone(),
         public_url: public_url.clone(),
+        log_buffer,
     });
 
     // Create MCP service with multi-database support via ?db= query param

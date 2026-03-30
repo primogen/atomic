@@ -33,6 +33,7 @@ import {
   type CreateTokenResponse,
   type Feed,
   reembedAllAtoms,
+  exportLogs,
   type IngestionResult,
   type FeedPollResult,
 } from '../../lib/api';
@@ -962,6 +963,37 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         }`}
                       />
                     </button>
+                  </div>
+
+                  {/* Troubleshooting */}
+                  <div className="space-y-2 pt-4 border-t border-[var(--color-border)]">
+                    <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                      Troubleshooting
+                    </label>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Export recent server logs to help diagnose issues
+                    </p>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const logs = await exportLogs();
+                          const date = new Date().toISOString().split('T')[0];
+                          const blob = new Blob([logs], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `atomic-logs-${date}.txt`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                          toast.success('Logs exported');
+                        } catch (e) {
+                          toast.error('Failed to export logs', { description: String(e) });
+                        }
+                      }}
+                      variant="secondary"
+                    >
+                      Export Logs
+                    </Button>
                   </div>
                 </>
               )}
