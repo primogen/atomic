@@ -26,6 +26,9 @@ services:
       FLY_REGION: ${FLY_REGION:-iad}
       ATOMIC_IMAGE: ${ATOMIC_IMAGE:-ghcr.io/kenforthewin/atomic:latest}
       BASE_DOMAIN: ${BASE_DOMAIN:-atomicapp.ai}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-key_placeholder}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-mg.atomicapp.ai}
+      MAILGUN_FROM: ${MAILGUN_FROM:-Atomic <noreply@atomicapp.ai>}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
 

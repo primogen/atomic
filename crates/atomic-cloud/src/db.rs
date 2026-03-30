@@ -260,6 +260,58 @@ pub async fn list_instances_for_teardown(
     .map_err(CloudError::from)
 }
 
+// -- Magic Links --
+
+pub async fn create_magic_link(
+    pool: &PgPool,
+    email: &str,
+    token: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<(), CloudError> {
+    sqlx::query(
+        "INSERT INTO magic_links (id, email, token, expires_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(email)
+    .bind(token)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .map_err(CloudError::from)?;
+    Ok(())
+}
+
+/// Consume a magic link token. Returns the email if valid and unused.
+pub async fn consume_magic_link(
+    pool: &PgPool,
+    token: &str,
+) -> Result<Option<String>, CloudError> {
+    let row = sqlx::query_as::<_, (String,)>(
+        r#"
+        UPDATE magic_links SET used = true
+        WHERE token = $1 AND used = false AND expires_at > now()
+        RETURNING email
+        "#,
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+    .map_err(CloudError::from)?;
+
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn get_customer_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<Customer>, CloudError> {
+    sqlx::query_as::<_, Customer>("SELECT * FROM customers WHERE email = $1")
+        .bind(email)
+        .fetch_optional(pool)
+        .await
+        .map_err(CloudError::from)
+}
+
 // -- Events (idempotency) --
 
 /// Try to insert a Stripe event for idempotency. Returns false if already processed.

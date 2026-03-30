@@ -89,3 +89,18 @@ export async function restartInstance(): Promise<{ status: string }> {
 export async function getBillingPortalUrl(): Promise<{ portal_url: string }> {
   return apiFetch("/api/instance/portal", { method: "POST" });
 }
+
+export async function sendMagicLink(
+  email: string
+): Promise<{ status: string; message: string }> {
+  return apiFetch("/api/auth/send", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function verifyMagicLink(
+  token: string
+): Promise<{ management_token: string; instance_id: string; status: string }> {
+  return apiFetch(`/api/auth/verify?token=${encodeURIComponent(token)}`);
+}

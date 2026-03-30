@@ -62,6 +62,13 @@ pub async fn create_checkout(
         return e.to_response();
     }
 
+    // Check if this email already has an active instance
+    if let Ok(Some(customer)) = crate::db::get_customer_by_email(&state.db, &body.email).await {
+        if let Ok(Some(_)) = crate::db::get_instance_by_customer_id(&state.db, customer.id).await {
+            return CloudError::Conflict("An instance already exists for this email. Sign in to manage it.".into()).to_response();
+        }
+    }
+
     // Check subdomain availability
     match crate::db::get_instance_by_subdomain(&state.db, &body.subdomain).await {
         Ok(Some(_)) => {

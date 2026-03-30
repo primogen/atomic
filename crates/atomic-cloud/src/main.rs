@@ -41,6 +41,9 @@ async fn main() -> std::io::Result<()> {
             fly_region,
             atomic_image,
             base_domain,
+            mailgun_api_key,
+            mailgun_domain,
+            mailgun_from,
             admin_api_key,
             public_url,
             frontend_dir,
@@ -57,6 +60,9 @@ async fn main() -> std::io::Result<()> {
                 fly_region,
                 atomic_image,
                 base_domain,
+                mailgun_api_key,
+                mailgun_domain,
+                mailgun_from,
                 admin_api_key,
                 public_url,
                 frontend_dir,
@@ -84,6 +90,9 @@ async fn run_server(
     fly_region: String,
     atomic_image: String,
     base_domain: String,
+    mailgun_api_key: String,
+    mailgun_domain: String,
+    mailgun_from: String,
     admin_api_key: String,
     public_url: String,
     frontend_dir: String,
@@ -112,10 +121,17 @@ async fn run_server(
     // Spawn background cleanup job
     jobs::spawn_cleanup_job(pool.clone(), Arc::clone(&fly_client));
 
+    let mailgun_client = clients::mailgun::MailgunClient::new(
+        mailgun_api_key,
+        mailgun_domain,
+        mailgun_from,
+    );
+
     let app_state = web::Data::new(state::CloudState {
         db: pool,
         stripe: clients::stripe::StripeClient::new(stripe_secret_key),
         fly: fly_client,
+        mailgun: mailgun_client,
         config: state::CloudConfig {
             stripe_price_id,
             stripe_webhook_secret,

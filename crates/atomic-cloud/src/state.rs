@@ -1,6 +1,6 @@
 //! Application state shared across all request handlers
 
-use crate::clients::{fly::FlyClient, stripe::StripeClient};
+use crate::clients::{fly::FlyClient, mailgun::MailgunClient, stripe::StripeClient};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -8,6 +8,7 @@ pub struct CloudState {
     pub db: PgPool,
     pub stripe: StripeClient,
     pub fly: Arc<FlyClient>,
+    pub mailgun: MailgunClient,
     pub config: CloudConfig,
 }
 

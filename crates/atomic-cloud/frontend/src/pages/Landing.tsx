@@ -59,7 +59,7 @@ export default function Landing() {
           <a href="https://atomicapp.ai" className="font-display text-xl tracking-tight">
             atomic
           </a>
-          <span className="text-sm text-text-muted">Managed Hosting</span>
+          <a href="/signin" className="text-sm text-text-secondary hover:text-text-primary transition-colors">Sign in</a>
         </div>
       </nav>
 

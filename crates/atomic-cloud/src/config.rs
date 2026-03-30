@@ -58,6 +58,18 @@ pub enum Command {
         #[arg(long, default_value = "atomicapp.ai", env = "BASE_DOMAIN")]
         base_domain: String,
 
+        /// Mailgun API key
+        #[arg(long, env = "MAILGUN_API_KEY")]
+        mailgun_api_key: String,
+
+        /// Mailgun sending domain
+        #[arg(long, env = "MAILGUN_DOMAIN")]
+        mailgun_domain: String,
+
+        /// Mailgun sender address
+        #[arg(long, default_value = "Atomic <noreply@atomicapp.ai>", env = "MAILGUN_FROM")]
+        mailgun_from: String,
+
         /// Admin API key for management routes
         #[arg(long, env = "ADMIN_API_KEY")]
         admin_api_key: String,
