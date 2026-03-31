@@ -418,7 +418,9 @@ impl FlyClient {
         Ok(())
     }
 
-    /// Update a machine's image (for auto-updates)
+    /// Update a machine's image (for auto-updates).
+    /// Fetches the existing config first and merges in the new image to avoid
+    /// wiping env vars, mounts, services, and health checks.
     pub async fn update_machine_image(
         &self,
         app_name: &str,
@@ -427,17 +429,38 @@ impl FlyClient {
     ) -> Result<(), CloudError> {
         let url = format!("{}/apps/{}/machines/{}", FLY_API_BASE, app_name, machine_id);
 
-        let config = serde_json::json!({
-            "config": {
-                "image": image
-            }
+        // Fetch existing machine config
+        let resp = self
+            .inner.http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| CloudError::Fly(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CloudError::Fly(format!("Get machine for update failed: {body}")));
+        }
+
+        let mut machine: serde_json::Value = resp.json().await
+            .map_err(|e| CloudError::Fly(e.to_string()))?;
+
+        // Update only the image in the existing config
+        if let Some(config) = machine.get_mut("config") {
+            config["image"] = serde_json::Value::String(image.to_string());
+        }
+
+        // Send update with full config
+        let update_body = serde_json::json!({
+            "config": machine["config"],
         });
 
         let resp = self
             .inner.http
             .post(&url)
             .header("Authorization", self.auth_header())
-            .json(&config)
+            .json(&update_body)
             .send()
             .await
             .map_err(|e| CloudError::Fly(e.to_string()))?;
