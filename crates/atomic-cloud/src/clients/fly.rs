@@ -129,33 +129,6 @@ impl FlyClient {
         Ok(())
     }
 
-    /// Add a TLS certificate for a custom domain
-    pub async fn add_certificate(&self, app_name: &str, hostname: &str) -> Result<(), CloudError> {
-        let query = serde_json::json!({
-            "query": "mutation($appId: ID!, $hostname: String!) { addCertificate(appId: $appId, hostname: $hostname) { certificate { id hostname } } }",
-            "variables": {
-                "appId": app_name,
-                "hostname": hostname,
-            }
-        });
-
-        let resp = self
-            .inner.http
-            .post(FLY_GRAPHQL_URL)
-            .header("Authorization", self.auth_header())
-            .json(&query)
-            .send()
-            .await
-            .map_err(|e| CloudError::Fly(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Fly(format!("Add certificate failed: {body}")));
-        }
-
-        Ok(())
-    }
-
     /// Delete a Fly app and all its resources
     pub async fn delete_app(&self, app_name: &str) -> Result<(), CloudError> {
         let url = format!("{}/apps/{}", FLY_API_BASE, app_name);

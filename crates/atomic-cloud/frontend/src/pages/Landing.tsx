@@ -119,6 +119,9 @@ export default function Landing() {
                     Subdomain
                   </label>
                   <div className="flex items-center gap-0">
+                    <span className="px-3.5 py-2.5 rounded-l-lg border border-r-0 border-border bg-bg-secondary text-text-muted text-sm">
+                      atomic-
+                    </span>
                     <input
                       type="text"
                       required
@@ -127,10 +130,10 @@ export default function Landing() {
                         setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))
                       }
                       placeholder="your-name"
-                      className="flex-1 px-3.5 py-2.5 rounded-l-lg border border-r-0 border-border bg-bg-primary text-text-primary placeholder:text-text-muted text-sm focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
+                      className="flex-1 px-3.5 py-2.5 border border-x-0 border-border bg-bg-primary text-text-primary placeholder:text-text-muted text-sm focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
                     />
                     <span className="px-3.5 py-2.5 rounded-r-lg border border-border bg-bg-secondary text-text-muted text-sm">
-                      .atomicapp.ai
+                      .fly.dev
                     </span>
                   </div>
                   {/* Availability indicator */}
