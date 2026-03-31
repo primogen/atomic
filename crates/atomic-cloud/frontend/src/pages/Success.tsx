@@ -30,6 +30,7 @@ export default function Success() {
       // Step 1: Exchange session ID for management token
       // Always re-exchange when a session_id is present (token may be stale from a prior attempt)
       if (sessionId) {
+        let retries = 0;
         while (!cancelled) {
           try {
             const result = await exchangeSession(sessionId);
@@ -38,8 +39,13 @@ export default function Success() {
               break;
             }
             // Webhook hasn't processed yet — retry
-          } catch {
-            // Server may not have the session yet
+            retries = 0;
+          } catch (err) {
+            retries++;
+            if (retries >= 15) {
+              setError(err instanceof Error ? err.message : "Failed to set up your account. Please contact support.");
+              return;
+            }
           }
           await new Promise((r) => setTimeout(r, 2000));
         }
@@ -49,9 +55,11 @@ export default function Success() {
       setStage("provisioning");
 
       // Step 2: Poll for instance status
+      let pollRetries = 0;
       while (!cancelled) {
         try {
           const status = await getInstanceStatus();
+          pollRetries = 0;
 
           if (status.status === "running") {
             setStage("ready");
@@ -68,8 +76,12 @@ export default function Success() {
           if (status.status === "provisioning") {
             setStage("starting");
           }
-        } catch {
-          // Instance may not exist yet, keep polling
+        } catch (err) {
+          pollRetries++;
+          if (pollRetries >= 15) {
+            setError(err instanceof Error ? err.message : "Failed to check instance status. Please contact support.");
+            return;
+          }
         }
 
         await new Promise((r) => setTimeout(r, 2000));
