@@ -176,6 +176,10 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
+code, pre, kbd, samp, .cm-editor {
+  letter-spacing: normal;
+}
+
 #root {
   height: 100%;
   overflow: hidden;

@@ -182,7 +182,7 @@ export const ClusterBubble = memo(function ClusterBubble({
               textAnchor="middle"
               fill={`hsla(${hue}, 30%, 55%, 0.5)`}
               fontSize={7}
-              fontFamily="var(--font-sans)"
+              style={{ fontFamily: 'var(--font-sans)' }}
             >
               +{extraCount}
             </text>
