@@ -8,7 +8,7 @@ mod agentic;
 pub(crate) mod centroid;
 pub mod section_ops;
 
-pub use section_ops::{apply_section_ops, WikiSectionOp};
+pub use section_ops::{apply_section_ops, WikiSectionOp, WikiSectionOpWire};
 
 use crate::models::{
     ChunkWithContext, RelatedTag, SuggestedArticle, WikiArticle, WikiArticleSummary,
@@ -161,26 +161,40 @@ async fn select_update_chunks(
     }
 }
 
-/// Structured result from the section-ops LLM call.
+/// Structured result from the section-ops LLM call. Deserializes the flat
+/// wire shape emitted by the structured-output schema; the generator then
+/// calls `WikiSectionOpWire::into_op()` on each entry to validate and convert
+/// to the strict `WikiSectionOp` enum.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WikiUpdateOpsResult {
-    pub operations: Vec<WikiSectionOp>,
+    pub operations: Vec<WikiSectionOpWire>,
     #[allow(dead_code)]
     #[serde(default)]
     pub citations_used: Vec<i32>,
 }
 
-/// JSON Schema for `WikiUpdateOpsResult`. Flat schema with a string
-/// discriminator (`op`) and all other fields optional — `#[serde(tag = "op")]`
-/// handles dispatch. Flat-schema form is used instead of `oneOf` because some
-/// providers reject discriminated unions in strict structured-output mode.
+/// JSON Schema for `WikiUpdateOpsResult`.
+///
+/// Design constraints dictated by multi-provider support:
+///
+/// - **No `oneOf` discriminated unions.** OpenAI strict mode supports them
+///   but some OpenRouter-routed providers and local models fall back oddly.
+/// - **No nullable unions (`["string", "null"]`).** OpenAI/Anthropic handle
+///   these, but smaller local models via Ollama are unreliable.
+/// - **All fields required, all strings.** Empty string `""` is the sentinel
+///   for "not applicable" — same convention as `extraction.rs` which is
+///   proven to work across every provider in this codebase.
+/// - **`additionalProperties: false`.** Required by OpenAI strict mode.
+///
+/// The LLM emits the flat shape; `WikiSectionOpWire::into_op()` validates
+/// and converts to the strict `WikiSectionOp` enum.
 fn section_ops_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
             "operations": {
                 "type": "array",
-                "description": "List of section operations to apply to the article, in order.",
+                "description": "List of section operations to apply to the article, in order. Return a single operation with op=\"NoChange\" if nothing needs to change.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -190,16 +204,16 @@ fn section_ops_schema() -> serde_json::Value {
                             "description": "Operation type."
                         },
                         "heading": {
-                            "type": ["string", "null"],
-                            "description": "For AppendToSection/ReplaceSection: exact existing heading. For InsertSection: the new section's heading."
+                            "type": "string",
+                            "description": "For AppendToSection/ReplaceSection: exact existing heading to target. For InsertSection: the new section's heading. For NoChange: empty string."
                         },
                         "after_heading": {
-                            "type": ["string", "null"],
-                            "description": "For InsertSection only: exact existing heading to insert after, or null to append at end."
+                            "type": "string",
+                            "description": "For InsertSection only: exact existing heading to insert AFTER, or empty string to append at end of article. For all other ops: empty string."
                         },
                         "content": {
-                            "type": ["string", "null"],
-                            "description": "New markdown content. Omit for NoChange."
+                            "type": "string",
+                            "description": "New markdown content for the operation. For NoChange: empty string."
                         }
                     },
                     "required": ["op", "heading", "after_heading", "content"],
@@ -310,22 +324,32 @@ async fn generate_section_ops_proposal(
     )
     .await?;
 
-    // No-op detection: empty ops, all NoChange, or a single NoChange.
-    let has_meaningful_op = result
+    // Convert the flat wire shape into the strict enum, validating required
+    // fields per variant. Any invalid op (unknown discriminator, missing
+    // required field) aborts the whole proposal — same posture as a
+    // hallucinated heading.
+    let ops: Vec<WikiSectionOp> = result
         .operations
-        .iter()
-        .any(|o| !matches!(o, WikiSectionOp::NoChange));
+        .into_iter()
+        .map(|wire| wire.into_op())
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|e| {
+            tracing::warn!(error = %e, "[wiki] Section-ops LLM returned an invalid operation");
+            format!("LLM returned an invalid section operation: {}", e)
+        })?;
+
+    // No-op detection: empty ops, all NoChange, or a single NoChange.
+    let has_meaningful_op = ops.iter().any(|o| !matches!(o, WikiSectionOp::NoChange));
     if !has_meaningful_op {
         tracing::info!("[wiki] Proposal LLM returned no-change; nothing to propose");
         return Ok(None);
     }
 
     // Apply ops to the existing content. Hallucinated heading → error propagates.
-    let merged_content = apply_section_ops(&existing.article.content, &result.operations)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "[wiki] Section ops applier failed");
-            e
-        })?;
+    let merged_content = apply_section_ops(&existing.article.content, &ops).map_err(|e| {
+        tracing::warn!(error = %e, "[wiki] Section ops applier failed");
+        e
+    })?;
 
     // Build all_chunks for citation extraction: existing citations (as pseudo-
     // chunks) followed by new chunks. Matches the update_wiki_content pattern.
@@ -344,7 +368,7 @@ async fn generate_section_ops_proposal(
     let citations = extract_citations(&existing.article.id, &merged_content, &all_chunks)?;
 
     Ok(Some(WikiProposalDraft {
-        ops: result.operations,
+        ops,
         merged_content,
         citations,
         new_atom_count: atom_count,
@@ -407,19 +431,21 @@ pub(crate) const WIKI_UPDATE_SECTION_OPS_PROMPT: &str = r#"You are proposing upd
 
 Return a list of structured operations that incorporate the new information while leaving untouched sections exactly as they are.
 
-Operations:
-- AppendToSection: add new material to the end of an existing section
-- ReplaceSection: rewrite a section's body (use sparingly — only when existing content is directly contradicted or superseded)
-- InsertSection: add a brand-new section (use only for genuinely new topics not covered elsewhere; pass null for after_heading to append at the end)
-- NoChange: return this (as the only operation) if the new sources don't warrant updating the article
+Every operation is an object with four fields: op, heading, after_heading, content. All four fields MUST be present in every operation. Use empty strings ("") for fields that don't apply to the chosen op.
+
+Operations (value of the `op` field):
+- "NoChange": the new sources don't warrant updating the article. Use empty strings for heading, after_heading, and content. Return this as the ONLY operation in the list if nothing needs to change.
+- "AppendToSection": add new material to the end of an existing section. Set `heading` to the exact existing section heading. Set `content` to the new markdown to append. Leave `after_heading` as an empty string.
+- "ReplaceSection": rewrite a section's body (use sparingly — only when existing content is directly contradicted or superseded). Set `heading` to the exact existing section heading. Set `content` to the new body. Leave `after_heading` as an empty string.
+- "InsertSection": add a brand-new section (use only for genuinely new topics not covered elsewhere). Set `heading` to the new section's heading. Set `after_heading` to the exact existing heading you want to insert AFTER, or leave it empty ("") to append the new section at the end of the article. Set `content` to the new section body.
 
 Rules:
-- Headings in AppendToSection / ReplaceSection / InsertSection.after_heading must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS. Do not paraphrase, reword, or change capitalization. Do not include the ## prefix.
+- `heading` and `after_heading` values must EXACTLY match one of the headings listed under CURRENT SECTION HEADINGS when they reference existing sections. Do not paraphrase, reword, or change capitalization. Do not include the ## prefix.
 - Prefer AppendToSection over ReplaceSection. Prefer editing an existing section over creating a new one.
 - Every new factual claim MUST have a [N] citation using the next-available citation numbers shown in the user message.
 - Keep tone consistent with the existing article.
 - When mentioning topics that have their own wiki articles, use [[Topic Name]] notation — only for topics listed in EXISTING WIKI ARTICLES.
-- If the new sources don't meaningfully change what the article already says, return a single operation with op="NoChange"."#;
+- Never omit the heading, after_heading, or content fields. Use "" when they don't apply."#;
 
 // ==================== Shared LLM Infrastructure ====================
 

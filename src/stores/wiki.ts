@@ -348,7 +348,16 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   },
 
   generateArticle: async (tagId: string, tagName: string) => {
-    set({ isGenerating: true, error: null, selectedVersion: null });
+    set({
+      isGenerating: true,
+      error: null,
+      selectedVersion: null,
+      // Any pending proposal was computed against the article we're about
+      // to replace, so it's meaningless now. Backend clears the row; clear
+      // the in-memory mirror + exit review mode so the UI stays consistent.
+      proposal: null,
+      reviewingProposal: false,
+    });
     try {
       const article = await getTransport().invoke<WikiArticleWithCitations>('generate_wiki_article', { tagId, tagName });
       set({ currentArticle: article, isGenerating: false });
@@ -384,7 +393,16 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   deleteArticle: async (tagId: string) => {
     try {
       await getTransport().invoke('delete_wiki_article', { tagId });
-      set({ currentArticle: null, articleStatus: null, relatedTags: [], wikiLinks: [], versions: [], selectedVersion: null });
+      set({
+        currentArticle: null,
+        articleStatus: null,
+        relatedTags: [],
+        wikiLinks: [],
+        versions: [],
+        selectedVersion: null,
+        proposal: null,
+        reviewingProposal: false,
+      });
       // Refresh the list
       get().fetchAllArticles();
     } catch (error) {

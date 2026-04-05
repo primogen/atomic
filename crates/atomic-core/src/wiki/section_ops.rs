@@ -33,6 +33,83 @@ pub enum WikiSectionOp {
     },
 }
 
+/// Flat wire shape that LLMs actually emit. Matches the structured-output
+/// JSON schema: all fields are plain strings, all are required, empty string
+/// is the sentinel for "not applicable." This avoids `["string", "null"]`
+/// type unions (unreliable on smaller local models) and `oneOf` discriminated
+/// unions (rejected by some provider strict modes) while staying aligned with
+/// the convention used by `extraction.rs` for tag extraction.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WikiSectionOpWire {
+    pub op: String,
+    #[serde(default)]
+    pub heading: String,
+    #[serde(default)]
+    pub after_heading: String,
+    #[serde(default)]
+    pub content: String,
+}
+
+impl WikiSectionOpWire {
+    /// Validate and convert the wire shape into the strict enum.
+    ///
+    /// Returns a descriptive error (for logs + user-facing "LLM hallucinated"
+    /// messaging) if the op string is unknown or a required field is empty
+    /// for the chosen variant.
+    pub fn into_op(self) -> Result<WikiSectionOp, String> {
+        match self.op.as_str() {
+            "NoChange" => Ok(WikiSectionOp::NoChange),
+            "AppendToSection" => {
+                if self.heading.trim().is_empty() {
+                    return Err("AppendToSection requires a non-empty heading".to_string());
+                }
+                if self.content.trim().is_empty() {
+                    return Err("AppendToSection requires non-empty content".to_string());
+                }
+                Ok(WikiSectionOp::AppendToSection {
+                    heading: self.heading,
+                    content: self.content,
+                })
+            }
+            "ReplaceSection" => {
+                if self.heading.trim().is_empty() {
+                    return Err("ReplaceSection requires a non-empty heading".to_string());
+                }
+                if self.content.trim().is_empty() {
+                    return Err("ReplaceSection requires non-empty content".to_string());
+                }
+                Ok(WikiSectionOp::ReplaceSection {
+                    heading: self.heading,
+                    content: self.content,
+                })
+            }
+            "InsertSection" => {
+                if self.heading.trim().is_empty() {
+                    return Err("InsertSection requires a non-empty heading".to_string());
+                }
+                if self.content.trim().is_empty() {
+                    return Err("InsertSection requires non-empty content".to_string());
+                }
+                // Empty `after_heading` means "append to end" (sentinel convention).
+                let after_heading = if self.after_heading.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.after_heading)
+                };
+                Ok(WikiSectionOp::InsertSection {
+                    after_heading,
+                    heading: self.heading,
+                    content: self.content,
+                })
+            }
+            other => Err(format!(
+                "Unknown op '{}' — expected NoChange, AppendToSection, ReplaceSection, or InsertSection",
+                other
+            )),
+        }
+    }
+}
+
 /// Internal representation of a parsed section.
 #[derive(Debug, Clone)]
 struct Section {
@@ -405,6 +482,108 @@ Status body.
         assert!(overview_pos < details_pos);
         assert!(details_pos < notes_pos);
         assert!(notes_pos < status_pos);
+    }
+
+    #[test]
+    fn wire_shape_no_change_ignores_sentinels() {
+        // Sentinel empty strings on a NoChange op must not cause errors.
+        let wire = WikiSectionOpWire {
+            op: "NoChange".into(),
+            heading: "".into(),
+            after_heading: "".into(),
+            content: "".into(),
+        };
+        assert_eq!(wire.into_op().unwrap(), WikiSectionOp::NoChange);
+    }
+
+    #[test]
+    fn wire_shape_append_validates_required_fields() {
+        let wire = WikiSectionOpWire {
+            op: "AppendToSection".into(),
+            heading: "Details".into(),
+            after_heading: "".into(),
+            content: "new material [3]".into(),
+        };
+        let op = wire.into_op().unwrap();
+        assert_eq!(
+            op,
+            WikiSectionOp::AppendToSection {
+                heading: "Details".into(),
+                content: "new material [3]".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn wire_shape_append_rejects_empty_heading() {
+        let wire = WikiSectionOpWire {
+            op: "AppendToSection".into(),
+            heading: "".into(),
+            after_heading: "".into(),
+            content: "x".into(),
+        };
+        let err = wire.into_op().unwrap_err();
+        assert!(err.contains("heading"));
+    }
+
+    #[test]
+    fn wire_shape_insert_with_empty_after_heading_is_append_to_end() {
+        let wire = WikiSectionOpWire {
+            op: "InsertSection".into(),
+            heading: "Appendix".into(),
+            after_heading: "".into(),
+            content: "body".into(),
+        };
+        let op = wire.into_op().unwrap();
+        assert_eq!(
+            op,
+            WikiSectionOp::InsertSection {
+                after_heading: None,
+                heading: "Appendix".into(),
+                content: "body".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn wire_shape_insert_with_after_heading_preserves_it() {
+        let wire = WikiSectionOpWire {
+            op: "InsertSection".into(),
+            heading: "New".into(),
+            after_heading: "Overview".into(),
+            content: "body".into(),
+        };
+        let op = wire.into_op().unwrap();
+        assert_eq!(
+            op,
+            WikiSectionOp::InsertSection {
+                after_heading: Some("Overview".into()),
+                heading: "New".into(),
+                content: "body".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn wire_shape_rejects_unknown_op() {
+        let wire = WikiSectionOpWire {
+            op: "RewriteEverything".into(),
+            heading: "".into(),
+            after_heading: "".into(),
+            content: "".into(),
+        };
+        let err = wire.into_op().unwrap_err();
+        assert!(err.contains("Unknown op"));
+    }
+
+    #[test]
+    fn wire_shape_deserializes_from_flat_json_with_all_fields() {
+        // Exactly the shape the LLM structured-output schema asks for.
+        let json = r#"{"op":"AppendToSection","heading":"Details","after_heading":"","content":"x [3]"}"#;
+        let wire: WikiSectionOpWire = serde_json::from_str(json).unwrap();
+        assert_eq!(wire.op, "AppendToSection");
+        let op = wire.into_op().unwrap();
+        assert!(matches!(op, WikiSectionOp::AppendToSection { .. }));
     }
 
     #[test]

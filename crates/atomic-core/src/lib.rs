@@ -807,6 +807,10 @@ impl AtomicCore {
         tag_id: &str,
         tag_name: &str,
     ) -> Result<WikiArticleWithCitations, AtomicCoreError> {
+        // Hold the per-tag lock for the whole operation so a concurrent
+        // propose/accept can't race the regeneration and leave a proposal
+        // pointing at an article version that's about to be replaced.
+        let _guard = self.wiki_tag_lock(tag_id).await;
         tracing::info!(tag_name, tag_id, "[wiki] Generating article");
 
         let (strategy, ctx) = self.build_wiki_strategy_context(tag_id, tag_name)?;
@@ -825,6 +829,13 @@ impl AtomicCore {
 
         // Save to database
         self.storage.save_wiki_with_links_sync(&result.article, &result.citations, &wiki_links)?;
+
+        // Any pending proposal was computed against the previous live article
+        // and is now meaningless — drop it. Log-and-continue on error; a stale
+        // proposal will still be caught by the base_updated_at check on accept.
+        if let Err(e) = self.storage.delete_wiki_proposal_sync(tag_id) {
+            tracing::warn!(tag_id, error = %e, "[wiki] Failed to clean up pending proposal after regenerate");
+        }
 
         tracing::info!("[wiki] Article saved successfully");
         Ok(result)
@@ -1045,9 +1056,15 @@ impl AtomicCore {
         self.storage.get_wiki_status_sync(tag_id)
     }
 
-    /// Delete a wiki article
+    /// Delete a wiki article (and any pending proposal for it — once the
+    /// underlying article is gone, the proposal references a base that no
+    /// longer exists).
     pub fn delete_wiki(&self, tag_id: &str) -> Result<(), AtomicCoreError> {
-        self.storage.delete_wiki_sync(tag_id)
+        self.storage.delete_wiki_sync(tag_id)?;
+        if let Err(e) = self.storage.delete_wiki_proposal_sync(tag_id) {
+            tracing::warn!(tag_id, error = %e, "[wiki] Failed to clean up pending proposal after delete");
+        }
+        Ok(())
     }
 
     /// Get tags related to a given tag by semantic connectivity
