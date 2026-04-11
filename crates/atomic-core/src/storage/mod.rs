@@ -254,6 +254,8 @@ dispatch! {
         => sqlite: update_tag_impl, pg_trait: TagStore, pg_method: update_tag;
     fn delete_tag_impl(&self, id: &str, recursive: bool) -> Result<(), AtomicCoreError>
         => sqlite: delete_tag_impl, pg_trait: TagStore, pg_method: delete_tag;
+    fn set_tag_autotag_target_impl(&self, id: &str, value: bool) -> Result<(), AtomicCoreError>
+        => sqlite: set_tag_autotag_target_impl, pg_trait: TagStore, pg_method: set_tag_autotag_target;
     fn get_related_tags_impl(&self, tag_id: &str, limit: usize) -> Result<Vec<RelatedTag>, AtomicCoreError>
         => sqlite: get_related_tags_impl, pg_trait: TagStore, pg_method: get_related_tags;
     fn get_tags_for_compaction_impl(&self) -> Result<String, AtomicCoreError>

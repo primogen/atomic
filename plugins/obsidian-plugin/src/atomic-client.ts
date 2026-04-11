@@ -68,6 +68,21 @@ export interface WikiArticle {
   updated_at: string;
 }
 
+export interface WikiCitation {
+  id: string;
+  citation_index: number;
+  atom_id: string;
+  chunk_index: number | null;
+  excerpt: string;
+  /** Source URL of the cited atom (e.g. `obsidian://VaultName/path.md`), or null. */
+  source_url: string | null;
+}
+
+export interface WikiArticleWithCitations {
+  article: WikiArticle;
+  citations: WikiCitation[];
+}
+
 export interface CreateAtomRequest {
   content: string;
   source_url?: string | null;
@@ -208,21 +223,23 @@ export class AtomicClient {
 
   // Wiki
 
-  async getWikiArticle(tagId: string): Promise<WikiArticle | null> {
+  async getWikiArticle(tagId: string): Promise<WikiArticleWithCitations | null> {
     try {
-      return await this.request({
+      const result = await this.request<WikiArticleWithCitations | null>({
         url: `${this.baseUrl}/api/wiki/${tagId}`,
         method: "GET",
       });
+      return result ?? null;
     } catch {
       return null;
     }
   }
 
-  async generateWikiArticle(tagId: string): Promise<WikiArticle> {
+  async generateWikiArticle(tagId: string, tagName: string): Promise<WikiArticleWithCitations> {
     return this.request({
       url: `${this.baseUrl}/api/wiki/${tagId}/generate`,
       method: "POST",
+      body: JSON.stringify({ tag_name: tagName }),
     });
   }
 

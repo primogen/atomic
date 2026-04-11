@@ -12,7 +12,7 @@ use chrono::Utc;
 /// Load all tags and their direct (denormalized) atom counts from the database.
 fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, i32>), AtomicCoreError> {
     let mut stmt = conn
-        .prepare("SELECT id, name, parent_id, created_at, atom_count FROM tags ORDER BY name")?;
+        .prepare("SELECT id, name, parent_id, created_at, atom_count, is_autotag_target FROM tags ORDER BY name")?;
 
     let mut direct_counts: HashMap<String, i32> = HashMap::new();
     let all_tags: Vec<Tag> = stmt
@@ -25,6 +25,7 @@ fn load_tags_and_counts(conn: &Connection) -> Result<(Vec<Tag>, HashMap<String, 
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
+                is_autotag_target: row.get::<_, i32>(5)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -67,7 +68,8 @@ impl SqliteStorage {
         // so no JOIN or GROUP BY needed — just read the column directly.
         let mut stmt = conn.prepare(
             "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
-                (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_total
+                (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id) AS children_total,
+                t.is_autotag_target
             FROM tags t
             WHERE t.parent_id = ?1
             ORDER BY t.atom_count DESC
@@ -82,6 +84,7 @@ impl SqliteStorage {
                         name: row.get(1)?,
                         parent_id: row.get(2)?,
                         created_at: row.get(3)?,
+                        is_autotag_target: row.get::<_, i32>(6)? != 0,
                     },
                     atom_count: row.get(4)?,
                     children_total: row.get(5)?,
@@ -117,6 +120,7 @@ impl SqliteStorage {
             name: name.to_string(),
             parent_id: parent_id.map(String::from),
             created_at: now,
+            is_autotag_target: false,
         })
     }
 
@@ -135,7 +139,7 @@ impl SqliteStorage {
 
         let tag = conn
             .query_row(
-                "SELECT id, name, parent_id, created_at FROM tags WHERE id = ?1",
+                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(Tag {
@@ -143,11 +147,26 @@ impl SqliteStorage {
                         name: row.get(1)?,
                         parent_id: row.get(2)?,
                         created_at: row.get(3)?,
+                        is_autotag_target: row.get::<_, i32>(4)? != 0,
                     })
                 },
             )?;
 
         Ok(tag)
+    }
+
+    pub(crate) fn set_tag_autotag_target_impl(
+        &self,
+        id: &str,
+        value: bool,
+    ) -> StorageResult<()> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let val = if value { 1 } else { 0 };
+        conn.execute(
+            "UPDATE tags SET is_autotag_target = ?1 WHERE id = ?2",
+            rusqlite::params![val, id],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn delete_tag_impl(&self, id: &str, recursive: bool) -> StorageResult<()> {
@@ -307,6 +326,10 @@ impl TagStore for SqliteStorage {
 
     async fn delete_tag(&self, id: &str, recursive: bool) -> StorageResult<()> {
         self.delete_tag_impl(id, recursive)
+    }
+
+    async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()> {
+        self.set_tag_autotag_target_impl(id, value)
     }
 
     async fn get_related_tags(

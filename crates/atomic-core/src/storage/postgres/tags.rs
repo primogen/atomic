@@ -11,8 +11,8 @@ use chrono::Utc;
 impl PostgresStorage {
     /// Load all tags and their direct (denormalized) atom counts.
     async fn load_tags_and_counts(&self) -> StorageResult<(Vec<Tag>, HashMap<String, i32>)> {
-        let rows: Vec<(String, String, Option<String>, String, i32)> = sqlx::query_as(
-            "SELECT id, name, parent_id, created_at, atom_count FROM tags WHERE db_id = $1 ORDER BY name",
+        let rows: Vec<(String, String, Option<String>, String, i32, bool)> = sqlx::query_as(
+            "SELECT id, name, parent_id, created_at, atom_count, is_autotag_target FROM tags WHERE db_id = $1 ORDER BY name",
         )
         .bind(&self.db_id)
         .fetch_all(&self.pool)
@@ -22,13 +22,14 @@ impl PostgresStorage {
         let mut direct_counts: HashMap<String, i32> = HashMap::new();
         let all_tags: Vec<Tag> = rows
             .into_iter()
-            .map(|(id, name, parent_id, created_at, count)| {
+            .map(|(id, name, parent_id, created_at, count, is_autotag_target)| {
                 direct_counts.insert(id.clone(), count);
                 Tag {
                     id,
                     name,
                     parent_id,
                     created_at,
+                    is_autotag_target,
                 }
             })
             .collect();
@@ -246,9 +247,10 @@ impl TagStore for PostgresStorage {
             });
         }
 
-        let rows: Vec<(String, String, Option<String>, String, i32, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, Option<String>, String, i32, i64, bool)> = sqlx::query_as(
             "SELECT t.id, t.name, t.parent_id, t.created_at, t.atom_count,
-                (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id AND c.db_id = $2) AS children_total
+                (SELECT COUNT(*) FROM tags c WHERE c.parent_id = t.id AND c.db_id = $2) AS children_total,
+                t.is_autotag_target
             FROM tags t
             WHERE t.parent_id = $1 AND t.db_id = $2
             ORDER BY t.atom_count DESC
@@ -264,12 +266,13 @@ impl TagStore for PostgresStorage {
 
         let mut children: Vec<TagWithCount> = rows
             .into_iter()
-            .map(|(id, name, parent_id, created_at, atom_count, children_total)| TagWithCount {
+            .map(|(id, name, parent_id, created_at, atom_count, children_total, is_autotag_target)| TagWithCount {
                 tag: Tag {
                     id,
                     name,
                     parent_id,
                     created_at,
+                    is_autotag_target,
                 },
                 atom_count,
                 children_total: children_total as i32,
@@ -309,6 +312,7 @@ impl TagStore for PostgresStorage {
             name: name.to_string(),
             parent_id: parent_id.map(String::from),
             created_at: now,
+            is_autotag_target: false,
         })
     }
 
@@ -327,8 +331,8 @@ impl TagStore for PostgresStorage {
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        let row: (String, String, Option<String>, String) = sqlx::query_as(
-            "SELECT id, name, parent_id, created_at FROM tags WHERE id = $1 AND db_id = $2",
+        let row: (String, String, Option<String>, String, bool) = sqlx::query_as(
+            "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE id = $1 AND db_id = $2",
         )
         .bind(id)
         .bind(&self.db_id)
@@ -341,7 +345,19 @@ impl TagStore for PostgresStorage {
             name: row.1,
             parent_id: row.2,
             created_at: row.3,
+            is_autotag_target: row.4,
         })
+    }
+
+    async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()> {
+        sqlx::query("UPDATE tags SET is_autotag_target = $1 WHERE id = $2 AND db_id = $3")
+            .bind(value)
+            .bind(id)
+            .bind(&self.db_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(())
     }
 
     async fn delete_tag(&self, id: &str, recursive: bool) -> StorageResult<()> {

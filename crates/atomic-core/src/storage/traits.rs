@@ -183,6 +183,9 @@ pub trait TagStore: Send + Sync {
     /// Delete a tag. If recursive, also deletes child tags.
     async fn delete_tag(&self, id: &str, recursive: bool) -> StorageResult<()>;
 
+    /// Mark or unmark a tag as a candidate for AI auto-tagging to extend with sub-tags.
+    async fn set_tag_autotag_target(&self, id: &str, value: bool) -> StorageResult<()>;
+
     /// Get tags semantically related to a given tag (via centroid similarity).
     async fn get_related_tags(
         &self,

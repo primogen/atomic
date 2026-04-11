@@ -206,25 +206,13 @@ impl AtomicCore {
         Self::seed_and_backfill(db, None)
     }
 
-    /// Shared initialization: seed default tags, reconcile vec dimension, backfill centroids.
+    /// Shared initialization: reconcile vec dimension, backfill centroids.
+    ///
+    /// Note: default category tags are NOT auto-seeded. The onboarding wizard
+    /// (or the user via the settings tab / API) decides which top-level categories
+    /// the auto-tagger may extend. Existing databases that were seeded before this
+    /// change keep their tags via the V11 migration's backfill.
     fn seed_and_backfill(db: Database, registry: Option<Arc<registry::Registry>>) -> Result<Self, AtomicCoreError> {
-        // Seed default category tags if tags table is empty
-        {
-            let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-            let tag_count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
-                .unwrap_or(0);
-            if tag_count == 0 {
-                let now = Utc::now().to_rfc3339();
-                for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
-                    let id = Uuid::new_v4().to_string();
-                    conn.execute(
-                        "INSERT OR IGNORE INTO tags (id, name, parent_id, created_at) VALUES (?1, ?2, NULL, ?3)",
-                        rusqlite::params![&id, category, &now],
-                    )?;
-                }
-            }
-        }
 
         // Reconcile vec_chunks dimension with the configured embedding model.
         // Only for empty databases (no atoms yet) — e.g. newly created databases
@@ -727,6 +715,104 @@ impl AtomicCore {
     /// Delete a tag
     pub fn delete_tag(&self, id: &str, recursive: bool) -> Result<(), AtomicCoreError> {
         self.storage.delete_tag_impl(id, recursive)
+    }
+
+    /// Mark or unmark a top-level tag as a candidate for AI auto-tagging to extend.
+    /// When false, the auto-tagger will not create new sub-tags under this tag.
+    pub fn set_tag_autotag_target(&self, id: &str, value: bool) -> Result<(), AtomicCoreError> {
+        self.storage.set_tag_autotag_target_impl(id, value)
+    }
+
+    /// Configure auto-tag targets in one shot — used by the onboarding wizard
+    /// and the settings tab.
+    ///
+    /// `keep_default_names`: which of the well-known default category names
+    /// (case-insensitive) the user wants. Each one is created if it doesn't exist
+    /// and flagged as an auto-tag target.
+    ///
+    /// `add_custom_names`: new top-level tag names to create with the flag set.
+    /// Names that already exist as top-level tags are flagged in place rather than duplicated.
+    ///
+    /// Defaults that exist but are NOT in `keep_default_names` are deleted if they
+    /// have no atoms or sub-tags (the safe case during onboarding). If they have
+    /// content, they're unflagged instead so their data isn't lost — re-runs from
+    /// settings after the user has tagged things stay non-destructive.
+    pub fn configure_autotag_targets(
+        &self,
+        keep_default_names: &[String],
+        add_custom_names: &[String],
+    ) -> Result<Vec<Tag>, AtomicCoreError> {
+        const DEFAULT_NAMES: &[&str] = &["Topics", "People", "Locations", "Organizations", "Events"];
+
+        let keep_lower: std::collections::HashSet<String> = keep_default_names
+            .iter()
+            .map(|n| n.trim().to_lowercase())
+            .filter(|n| !n.is_empty())
+            .collect();
+
+        // Snapshot current top-level tags so we can decide create vs. flag vs. delete.
+        let all_tags = self.storage.get_all_tags_impl()?;
+        let top_level: Vec<&TagWithCount> = all_tags
+            .iter()
+            .filter(|t| t.tag.parent_id.is_none())
+            .collect();
+
+        // Step 1: For each requested default, create it if missing and ensure it's flagged.
+        for default_name in DEFAULT_NAMES {
+            if !keep_lower.contains(&default_name.to_lowercase()) {
+                continue;
+            }
+            let existing = top_level
+                .iter()
+                .find(|t| t.tag.name.eq_ignore_ascii_case(default_name));
+            let tag_id = match existing {
+                Some(t) => t.tag.id.clone(),
+                None => self.storage.create_tag_impl(default_name, None)?.id,
+            };
+            self.storage.set_tag_autotag_target_impl(&tag_id, true)?;
+        }
+
+        // Step 2: For each existing default the user did NOT keep, delete if empty,
+        // otherwise unflag to keep their data intact.
+        for tag_with_count in &top_level {
+            let name = &tag_with_count.tag.name;
+            let is_default = DEFAULT_NAMES.iter().any(|d| d.eq_ignore_ascii_case(name));
+            let is_kept = keep_lower.contains(&name.to_lowercase());
+            if !is_default || is_kept {
+                continue;
+            }
+            if tag_with_count.atom_count == 0 && tag_with_count.children_total == 0 {
+                self.storage.delete_tag_impl(&tag_with_count.tag.id, false)?;
+            } else if tag_with_count.tag.is_autotag_target {
+                self.storage.set_tag_autotag_target_impl(&tag_with_count.tag.id, false)?;
+            }
+        }
+
+        // Step 3: Custom additions — create new top-level tags or flag existing ones.
+        let mut custom_tags: Vec<Tag> = Vec::new();
+        for name in add_custom_names {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Refresh the top-level snapshot since we may have just created/deleted defaults.
+            let current = self.storage.get_all_tags_impl()?;
+            let existing = current.iter().find(|t| {
+                t.tag.parent_id.is_none() && t.tag.name.eq_ignore_ascii_case(trimmed)
+            });
+            let tag_id = match existing {
+                Some(t) => t.tag.id.clone(),
+                None => self.storage.create_tag_impl(trimmed, None)?.id,
+            };
+            self.storage.set_tag_autotag_target_impl(&tag_id, true)?;
+            if let Some(updated) = self.storage.get_all_tags_impl()?.into_iter()
+                .find(|t| t.tag.id == tag_id)
+            {
+                custom_tags.push(updated.tag);
+            }
+        }
+
+        Ok(custom_tags)
     }
 
     // ==================== Search Operations ====================
@@ -2941,7 +3027,7 @@ pub(crate) fn atom_from_row(row: &rusqlite::Row) -> rusqlite::Result<Atom> {
 pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<Tag>, AtomicCoreError> {
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.name, t.parent_id, t.created_at
+            "SELECT t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
              FROM tags t
              INNER JOIN atom_tags at ON t.id = at.tag_id
              WHERE at.atom_id = ?1",
@@ -2955,6 +3041,7 @@ pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
+                is_autotag_target: row.get::<_, i32>(4)? != 0,
             })
         })
         ?
@@ -2969,7 +3056,7 @@ pub(crate) fn get_tags_for_atom(conn: &Connection, atom_id: &str) -> Result<Vec<
 pub(crate) fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collections::HashMap<String, Vec<Tag>>, AtomicCoreError> {
     let mut stmt = conn
         .prepare(
-            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at
+            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
              FROM atom_tags at
              INNER JOIN tags t ON at.tag_id = t.id",
         )?;
@@ -2985,6 +3072,7 @@ pub(crate) fn get_all_atom_tags_map(conn: &Connection) -> Result<std::collection
                     name: row.get(2)?,
                     parent_id: row.get(3)?,
                     created_at: row.get(4)?,
+                    is_autotag_target: row.get::<_, i32>(5)? != 0,
                 },
             ))
         })?;
@@ -3005,7 +3093,7 @@ pub(crate) fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) 
 
     let placeholders = atom_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at
+        "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at, t.is_autotag_target
          FROM atom_tags at
          INNER JOIN tags t ON at.tag_id = t.id
          WHERE at.atom_id IN ({})",
@@ -3025,6 +3113,7 @@ pub(crate) fn get_atom_tags_map_for_ids(conn: &Connection, atom_ids: &[String]) 
                     name: row.get(2)?,
                     parent_id: row.get(3)?,
                     created_at: row.get(4)?,
+                    is_autotag_target: row.get::<_, i32>(5)? != 0,
                 },
             ))
         })?;
@@ -3114,8 +3203,22 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    /// Test utility: Create a test database
+    /// Test utility: Create a test database with the five default category tags seeded.
+    /// (Production code no longer auto-seeds; tests opt in via this helper.)
     fn create_test_db() -> (AtomicCore, NamedTempFile) {
+        let temp_file = NamedTempFile::new().unwrap();
+        let db = AtomicCore::open_or_create(temp_file.path()).unwrap();
+        let defaults: Vec<String> = ["Topics", "People", "Locations", "Organizations", "Events"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        db.configure_autotag_targets(&defaults, &[]).unwrap();
+        (db, temp_file)
+    }
+
+    /// Test utility: Create an empty test database with no seeded tags.
+    #[allow(dead_code)]
+    fn create_empty_test_db() -> (AtomicCore, NamedTempFile) {
         let temp_file = NamedTempFile::new().unwrap();
         let db = AtomicCore::open_or_create(temp_file.path()).unwrap();
         (db, temp_file)
@@ -3125,14 +3228,14 @@ mod tests {
     fn get_seeded_tag(db: &AtomicCore, name: &str) -> Tag {
         let sqlite = db.storage.as_sqlite().unwrap();
         let conn = sqlite.db.conn.lock().unwrap();
-        let (id, tag_name, parent_id, created_at): (String, String, Option<String>, String) = conn
+        let (id, tag_name, parent_id, created_at, is_autotag_target): (String, String, Option<String>, String, i32) = conn
             .query_row(
-                "SELECT id, name, parent_id, created_at FROM tags WHERE LOWER(name) = LOWER(?1)",
+                "SELECT id, name, parent_id, created_at, is_autotag_target FROM tags WHERE LOWER(name) = LOWER(?1)",
                 [name],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
-        Tag { id, name: tag_name, parent_id, created_at }
+        Tag { id, name: tag_name, parent_id, created_at, is_autotag_target: is_autotag_target != 0 }
     }
 
     /// Test utility: Create a test atom

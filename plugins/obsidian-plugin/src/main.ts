@@ -82,7 +82,11 @@ export default class AtomicPlugin extends Plugin {
       return new SimilarView(leaf, this.client, () => syncState);
     });
 
-    this.registerView(WIKI_VIEW_TYPE, (leaf) => new WikiView(leaf, this.client));
+    this.registerView(WIKI_VIEW_TYPE, (leaf) => new WikiView(
+      leaf,
+      this.client,
+      () => this.settings.vaultName || this.app.vault.getName(),
+    ));
 
     // Auto-sync if enabled (skip if not yet configured)
     if (this.settings.authToken && this.settings.autoSync) {
