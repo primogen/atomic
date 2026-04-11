@@ -4,15 +4,9 @@ All notable changes to Atomic are documented here.
 
 ## v1.20.1 — 2026-04-11
 
-This release contains only a single commit that fixes an internal CI/release workflow file — specifically how the Discord notification message is formatted. There are **no user-facing changes** in this release.
-
-Given the instructions to omit purely internal CI changes unless they have a visible effect, the honest changelog entry is:
-
 - Fix release notification formatting in the CI pipeline (no user-facing changes).
 
 ## v1.20.0 — 2026-04-11
-
-Now I have a clear picture of all user-facing changes. Let me compose the changelog:
 
 - Add configurable auto-tag categories — choose which top-level tags the AI auto-tagger is allowed to extend (e.g. disable People/Locations if you don't need them, or add your own like "Projects" or "Books"), manageable during onboarding and in Settings → Tags
 - Add Obsidian plugin onboarding wizard with a 4-step setup flow, database selection, size-based sync batching, YAML frontmatter stripping, and real-time sync progress reporting
