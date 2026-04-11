@@ -12,6 +12,20 @@ use rusqlite::Connection;
 
 // ==================== Helper Functions ====================
 
+/// Truncate a string to at most `max_chars` characters, appending `...` if truncated.
+///
+/// Operates on character boundaries (not bytes) so it is safe for any UTF-8 input,
+/// including multi-byte scripts like Cyrillic, CJK, or emoji.
+pub(crate) fn truncate_preview(s: &str, max_chars: usize) -> String {
+    let mut iter = s.chars();
+    let head: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        format!("{}...", head)
+    } else {
+        head
+    }
+}
+
 /// Get tags for a conversation
 pub fn get_conversation_tags(
     conn: &Connection,
@@ -59,11 +73,7 @@ pub fn get_conversation_summary(
             [conversation_id],
             |row| {
                 let content: String = row.get(0)?;
-                Ok(if content.len() > 100 {
-                    { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
-                } else {
-                    content
-                })
+                Ok(truncate_preview(&content, 100))
             },
         )
         .ok();
@@ -339,11 +349,7 @@ fn batch_fetch_conversation_summaries(
     })?;
     for row in preview_rows {
         let (conv_id, content) = row?;
-        let preview = if content.len() > 100 {
-            format!("{}...", &content[..100])
-        } else {
-            content
-        };
+        let preview = truncate_preview(&content, 100);
         map.entry(conv_id).or_insert((0, None)).1 = Some(preview);
     }
 
@@ -1021,6 +1027,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.tags.len(), 2);
+    }
+
+    #[test]
+    fn test_truncate_preview_utf8_safe() {
+        // ASCII shorter than limit — returned as-is
+        assert_eq!(truncate_preview("hello", 100), "hello");
+
+        // ASCII longer than limit — truncated with ellipsis
+        let long_ascii = "a".repeat(150);
+        let truncated = truncate_preview(&long_ascii, 100);
+        assert_eq!(truncated.len(), 103); // 100 'a' + "..."
+        assert!(truncated.ends_with("..."));
+
+        // Cyrillic that would panic with byte slicing at 100 — must not panic
+        // and must return a valid UTF-8 string.
+        let cyrillic = "Это пример длинного текста на русском языке, который содержит только обычные кириллические символы и несколько предложений подряд. Он нужен только для воспроизведения ошибки.";
+        let preview = truncate_preview(cyrillic, 100);
+        assert!(preview.ends_with("..."));
+        assert_eq!(preview.chars().count(), 103); // 100 chars + "..."
+
+        // Emoji (4-byte UTF-8) — must not panic
+        let emoji = "😀".repeat(150);
+        let preview = truncate_preview(&emoji, 100);
+        assert!(preview.ends_with("..."));
+        assert_eq!(preview.chars().count(), 103);
+    }
+
+    #[test]
+    fn test_get_conversations_with_cyrillic_message() {
+        // Regression test for crash on /api/conversations when an assistant message
+        // contains long Cyrillic text. The batch summary path used to byte-slice the
+        // message content at index 100, which falls inside a multi-byte UTF-8
+        // character and panicked.
+        let (db, _temp) = setup_db();
+        let conn = db.conn.lock().unwrap();
+
+        let conv = create_conversation(&conn, &[], Some("Russian chat")).unwrap();
+        save_message(&conn, &conv.conversation.id, "user", "Привет").unwrap();
+        save_message(
+            &conn,
+            &conv.conversation.id,
+            "assistant",
+            "Это пример длинного текста на русском языке, который содержит только обычные кириллические символы и несколько предложений подряд. Он нужен только для воспроизведения ошибки в обработке preview строки. Если система пытается обрезать такой текст по байтам, а не по корректной UTF-8 границе символа, сервер падает при загрузке списка разговоров.",
+        )
+        .unwrap();
+
+        // Must not panic.
+        let conversations = get_conversations(&conn, None, 10, 0).unwrap();
+        assert_eq!(conversations.len(), 1);
+        let preview = conversations[0]
+            .last_message_preview
+            .as_ref()
+            .expect("preview should be set");
+        assert!(preview.ends_with("..."));
+        // Preview must be valid UTF-8 (it is by Rust type guarantee, but assert
+        // it parses cleanly as Cyrillic content).
+        assert!(preview.starts_with("Это пример"));
     }
 
     #[test]

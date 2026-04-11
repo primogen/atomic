@@ -1,4 +1,5 @@
 use super::PostgresStorage;
+use crate::chat::truncate_preview;
 use crate::error::AtomicCoreError;
 use crate::models::*;
 use crate::storage::traits::*;
@@ -64,13 +65,7 @@ async fn fetch_conversation_summary(
     .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
     .flatten();
 
-    let preview = last_message_preview.map(|content| {
-        if content.len() > 100 {
-            { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
-        } else {
-            content
-        }
-    });
+    let preview = last_message_preview.map(|content| truncate_preview(&content, 100));
 
     Ok((message_count as i32, preview))
 }
@@ -195,11 +190,7 @@ async fn batch_fetch_conversation_summaries(
     .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
     for (conv_id, content) in preview_rows {
-        let preview = if content.len() > 100 {
-            { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
-        } else {
-            content
-        };
+        let preview = truncate_preview(&content, 100);
         map.entry(conv_id).or_insert((0, None)).1 = Some(preview);
     }
 

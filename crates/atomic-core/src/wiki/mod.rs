@@ -655,10 +655,14 @@ pub(crate) async fn call_llm_for_wiki_typed<T: DeserializeOwned>(
                     Err(parse_err) => {
                         // Log the parse failure with enough context to debug, but don't retry —
                         // the same prompt will produce the same unparseable output.
-                        let preview = if content.len() > 500 {
-                            format!("{}...[truncated]", &content[..500])
-                        } else {
-                            content.clone()
+                        let preview = {
+                            let mut iter = content.chars();
+                            let head: String = iter.by_ref().take(500).collect();
+                            if iter.next().is_some() {
+                                format!("{}...[truncated]", head)
+                            } else {
+                                head
+                            }
                         };
                         tracing::error!(error = %parse_err, preview = %preview, "[wiki] Failed to parse LLM response as JSON");
                         return Err(format!("Failed to parse wiki result: {}", parse_err));
