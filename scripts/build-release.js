@@ -3,6 +3,11 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  getPreviousTag,
+  generateChangelogBody,
+  prependChangelog,
+} from './generate-changelog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -125,7 +130,7 @@ Examples:
   `);
 }
 
-function main() {
+async function main() {
   const bumpType = process.argv[2];
 
   if (!bumpType || bumpType === '--help' || bumpType === '-h') {
@@ -138,6 +143,10 @@ function main() {
   }
 
   preflight();
+
+  // Capture the previous release tag *before* we create the new one. This is
+  // the range the AI changelog summariser will walk.
+  const previousTag = getPreviousTag();
 
   // Get current version and bump it
   const currentVersion = getCurrentVersion();
@@ -155,9 +164,18 @@ function main() {
   exec('cargo update --workspace --offline');
   exec('npm install --package-lock-only --silent');
 
+  // Generate the AI changelog entry before committing so CHANGELOG.md lands in
+  // the same commit as the version bump. If the SDK call fails we abort here,
+  // before anything is committed or pushed.
+  log(`\nGenerating changelog entry${previousTag ? ` since ${previousTag}` : ''} via Claude Agent SDK...`);
+  const changelogBody = await generateChangelogBody(previousTag, newVersion);
+  log(`\n--- Changelog entry ---\n${changelogBody}\n-----------------------\n`);
+  prependChangelog(newVersion, changelogBody);
+  log('Updated CHANGELOG.md');
+
   // Commit, tag, and push
   log('\nCommitting version bump...');
-  exec('git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml Cargo.lock');
+  exec('git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml Cargo.lock CHANGELOG.md');
   exec(`git commit -m "Bump version to ${tagName}"`);
 
   log(`\nCreating tag ${tagName}...`);
@@ -170,4 +188,6 @@ function main() {
   log('Watch progress at: https://github.com/kenforthewin/atomic/actions');
 }
 
-main();
+main().catch((err) => {
+  error(err?.stack || err?.message || String(err));
+});
