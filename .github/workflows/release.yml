@@ -174,9 +174,7 @@ jobs:
             count == 1 { print }
           ' CHANGELOG.md)
           release_url="https://github.com/${REPO}/releases/tag/${TAG}"
-          content="**Atomic ${TAG}** released — ${release_url}
-
-${notes}"
+          content=$(printf '**Atomic %s** released — %s\n\n%s' "$TAG" "$release_url" "$notes")
           # Discord content cap is 2000 chars; leave headroom for the ellipsis.
           if [ ${#content} -gt 1900 ]; then
             content="${content:0:1900}…"
