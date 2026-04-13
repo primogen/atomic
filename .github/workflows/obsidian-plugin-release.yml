@@ -1,21 +1,5 @@
 name: Release Obsidian Plugin
 
-# Publishes the Obsidian plugin to a dedicated standalone repository
-# (kenforthewin/obsidian-atomic) because the Obsidian community directory does
-# not support plugins living in a monorepo subdirectory — it expects
-# manifest.json at the target repo's root.
-#
-# Setup (one-time):
-#   1. Create an empty public repo: kenforthewin/obsidian-atomic
-#   2. Create a fine-grained PAT with Contents: read/write on that repo
-#   3. Add it to this repo's Actions secrets as OBSIDIAN_PLUGIN_REPO_TOKEN
-#
-# Release flow:
-#   1. Bump version in plugins/obsidian-plugin/{manifest.json,package.json,versions.json}
-#   2. Commit, then tag: git tag obsidian-v0.1.1 && git push --tags
-#   3. This workflow syncs the plugin dir to the standalone repo and creates
-#      a release there with the three required assets.
-
 on:
   push:
     tags:
@@ -33,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: ${{ env.PLUGIN_DIR }}/package-lock.json
 
