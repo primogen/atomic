@@ -254,7 +254,13 @@ fn execute_get_atom(
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
 
-    if offset >= total && total > 0 {
+    // Empty atom — return empty before the range math, otherwise a nonzero
+    // offset would produce lines[offset..0] and panic.
+    if total == 0 {
+        return Ok(Some(String::new()));
+    }
+
+    if offset >= total {
         return Ok(Some(format!(
             "[offset={} is past end of atom ({} total lines)]",
             offset, total
