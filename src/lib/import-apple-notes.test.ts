@@ -3,6 +3,7 @@ import { Root } from 'protobufjs';
 import { descriptor } from './apple-notes/descriptor';
 import { NoteConverter } from './apple-notes/convert-note';
 import {
+  AppleNotesImportError,
   buildFolderHierarchy,
   importAppleNotesWithDeps,
   type AppleNotesAccount,
@@ -86,6 +87,7 @@ function makeDeps(data: AppleNotesData): AppleNotesDeps & {
   };
 }
 
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -123,7 +125,7 @@ describe('importAppleNotesWithDeps', () => {
       notes: [note()],
     };
     const deps = makeDeps(data);
-    const result = await importAppleNotesWithDeps('/tmp', {}, deps);
+    const result = await importAppleNotesWithDeps({}, deps);
 
     expect(result.imported).toBe(1);
     expect(result.skipped).toBe(0);
@@ -147,7 +149,7 @@ describe('importAppleNotesWithDeps', () => {
       notes: [note({ isPasswordProtected: true, protobufBase64: null })],
     };
     const deps = makeDeps(data);
-    const result = await importAppleNotesWithDeps('/tmp', {}, deps);
+    const result = await importAppleNotesWithDeps({}, deps);
 
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
@@ -162,11 +164,11 @@ describe('importAppleNotesWithDeps', () => {
       notes: [note({ folderPk: 200 })],
     };
 
-    const skipped = await importAppleNotesWithDeps('/tmp', {}, makeDeps(data));
+    const skipped = await importAppleNotesWithDeps({}, makeDeps(data));
     expect(skipped.imported).toBe(0);
     expect(skipped.skipped).toBe(1);
 
-    const kept = await importAppleNotesWithDeps('/tmp', { importTrashed: true }, makeDeps(data));
+    const kept = await importAppleNotesWithDeps({ importTrashed: true }, makeDeps(data));
     expect(kept.imported).toBe(1);
   });
 
@@ -177,7 +179,7 @@ describe('importAppleNotesWithDeps', () => {
       folders: [smart],
       notes: [note({ folderPk: 300 })],
     };
-    const result = await importAppleNotesWithDeps('/tmp', { importTrashed: true }, makeDeps(data));
+    const result = await importAppleNotesWithDeps({ importTrashed: true }, makeDeps(data));
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
   });
@@ -188,7 +190,7 @@ describe('importAppleNotesWithDeps', () => {
       folders: [folder()],
       notes: [note({ protobufBase64: null })],
     };
-    const result = await importAppleNotesWithDeps('/tmp', {}, makeDeps(data));
+    const result = await importAppleNotesWithDeps({}, makeDeps(data));
     expect(result.imported).toBe(0);
     expect(result.errors).toBe(1);
     expect(result.skipped).toBe(0);
@@ -205,7 +207,7 @@ describe('importAppleNotesWithDeps', () => {
       notes: [note({ folderPk: 2 })],
     };
     const deps = makeDeps(data);
-    await importAppleNotesWithDeps('/tmp', { importTags: true }, deps);
+    await importAppleNotesWithDeps({ importTags: true }, deps);
     expect(deps.tagCalls).toHaveLength(1);
     expect(deps.tagCalls[0].folderTags).toEqual([
       { name: 'Work', parentPath: ['Projects'] },
@@ -220,7 +222,6 @@ describe('importAppleNotesWithDeps', () => {
     };
     const progress: AppleNotesImportProgress[] = [];
     await importAppleNotesWithDeps(
-      '/tmp',
       { onProgress: (p) => progress.push({ ...p }) },
       makeDeps(data),
     );
@@ -228,6 +229,17 @@ describe('importAppleNotesWithDeps', () => {
     const files = importingEvents.map((p) => p.currentFile);
     expect(files).toContain('A');
     expect(files).toContain('B');
+  });
+
+  it('surfaces readAppleNotes errors to the caller', async () => {
+    const deps: AppleNotesDeps = {
+      readAppleNotes: async () => {
+        throw new AppleNotesImportError('permissionDenied', 'nope');
+      },
+      bulkCreate: async () => ({ atoms: [], count: 0, skipped: 0 }),
+      resolveTags: async () => [],
+    };
+    await expect(importAppleNotesWithDeps({}, deps)).rejects.toBeInstanceOf(AppleNotesImportError);
   });
 
   it('batches bulk creates in groups of 50', async () => {
@@ -239,7 +251,7 @@ describe('importAppleNotesWithDeps', () => {
       notes,
     };
     const deps = makeDeps(data);
-    const result = await importAppleNotesWithDeps('/tmp', {}, deps);
+    const result = await importAppleNotesWithDeps({}, deps);
     expect(result.imported).toBe(120);
     expect(deps.createCalls).toHaveLength(3);
     expect((deps.createCalls[0].atoms as unknown[]).length).toBe(50);

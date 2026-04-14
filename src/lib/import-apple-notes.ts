@@ -82,9 +82,23 @@ export interface AppleNotesImportOptions {
   onProgress?: (progress: AppleNotesImportProgress) => void;
 }
 
+/**
+ * Structured error thrown by `importAppleNotes` when the backend reports a
+ * known error condition. `kind === 'permissionDenied'` is the UI's cue to
+ * surface a "grant Full Disk Access" affordance instead of a generic error.
+ */
+export class AppleNotesImportError extends Error {
+  kind: 'permissionDenied' | 'notFound' | 'noHomeDir' | 'other';
+  constructor(kind: AppleNotesImportError['kind'], message: string) {
+    super(message);
+    this.name = 'AppleNotesImportError';
+    this.kind = kind;
+  }
+}
+
 // Exposed for tests.
 export interface AppleNotesDeps {
-  readAppleNotes: (folderPath: string) => Promise<AppleNotesData>;
+  readAppleNotes: () => Promise<AppleNotesData>;
   bulkCreate: (atoms: BulkCreateAtomInput[]) => Promise<BulkCreateResult>;
   resolveTags: (folderTags: HierarchicalTag[], flat: string[], cache: TagCache) => Promise<string[]>;
 }
@@ -119,10 +133,9 @@ function base64ToBytes(b64: string): Uint8Array {
 // ---------- Main entry point ----------
 
 export async function importAppleNotes(
-  folderPath: string,
   options: AppleNotesImportOptions = {},
 ): Promise<ImportResult> {
-  return importAppleNotesWithDeps(folderPath, options, defaultDeps());
+  return importAppleNotesWithDeps(options, defaultDeps());
 }
 
 /**
@@ -131,7 +144,6 @@ export async function importAppleNotes(
  * protobuf/Tauri/HTTP.
  */
 export async function importAppleNotesWithDeps(
-  folderPath: string,
   options: AppleNotesImportOptions,
   deps: AppleNotesDeps,
 ): Promise<ImportResult> {
@@ -143,7 +155,7 @@ export async function importAppleNotesWithDeps(
     onProgress,
   } = options;
 
-  const data = await deps.readAppleNotes(folderPath);
+  const data = await deps.readAppleNotes();
 
   const accountsByPk = new Map(data.accounts.map((a) => [a.pk, a]));
   const folderPks = new Set(data.folders.map((f) => f.pk));
@@ -355,10 +367,24 @@ function defaultDeps(): AppleNotesDeps {
   return {
     // `read_apple_notes` lives in the Tauri main process, not atomic-server,
     // so it must be invoked over Tauri IPC directly rather than through the
-    // HTTP transport (which would 404).
-    readAppleNotes: async (folderPath: string) => {
+    // HTTP transport (which would 404). No argument → backend uses the
+    // canonical `~/Library/Group Containers/group.com.apple.notes` path.
+    readAppleNotes: async () => {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<AppleNotesData>('read_apple_notes', { folderPath });
+      try {
+        return await invoke<AppleNotesData>('read_apple_notes', { folderPath: null });
+      } catch (raw) {
+        // Tauri passes through the Rust-side serde error. Normalize it into
+        // an AppleNotesImportError so callers can pattern-match on `kind`.
+        if (raw && typeof raw === 'object' && 'kind' in raw) {
+          const err = raw as { kind: string; message?: string };
+          throw new AppleNotesImportError(
+            err.kind as AppleNotesImportError['kind'],
+            err.message ?? 'Apple Notes import failed',
+          );
+        }
+        throw raw;
+      }
     },
     bulkCreate: (atoms: BulkCreateAtomInput[]) =>
       getTransport().invoke<BulkCreateResult>('bulk_create_atoms', { atoms }),

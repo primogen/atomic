@@ -57,9 +57,13 @@ import {
   type FeedPollResult,
 } from '../../lib/api';
 import { getTransport, switchTransport, switchToLocal, isDesktopApp, isLocalServer, getMcpBridgePath, type HttpTransportConfig } from '../../lib/transport';
-import { pickDirectory, isMacOS, getAppleNotesPath } from '../../lib/platform';
+import { pickDirectory, isMacOS, openExternalUrl } from '../../lib/platform';
 import { importMarkdownFolder, type ImportProgress } from '../../lib/import';
-import { importAppleNotes } from '../../lib/import-apple-notes';
+import { importAppleNotes, AppleNotesImportError } from '../../lib/import-apple-notes';
+
+/** macOS deep-link that opens the Full Disk Access pane in System Settings. */
+const MACOS_FULL_DISK_ACCESS_URL =
+  'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles';
 import { formatRelativeDate } from '../../lib/date';
 import { useDatabasesStore, type DatabaseInfo, type DatabaseStats } from '../../stores/databases';
 
@@ -1094,21 +1098,17 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
     }
   };
 
+  const [appleNotesNeedsFda, setAppleNotesNeedsFda] = useState(false);
+
   const handleAppleNotesImport = async () => {
     setImportResult(null);
     setImportError(null);
     setImportProgress(null);
+    setAppleNotesNeedsFda(false);
 
     try {
-      const defaultPath = await getAppleNotesPath();
-      const selected = await pickDirectory(
-        'Confirm Apple Notes data folder',
-        defaultPath ? { defaultPath } : undefined,
-      );
-      if (!selected) return;
-
       setIsImporting(true);
-      const result = await importAppleNotes(selected, {
+      const result = await importAppleNotes({
         importTags,
         onProgress: setImportProgress,
       });
@@ -1118,7 +1118,15 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
         await Promise.all([fetchAtoms(), fetchTags()]);
       }
     } catch (e) {
-      setImportError(String(e));
+      if (e instanceof AppleNotesImportError && e.kind === 'permissionDenied') {
+        setAppleNotesNeedsFda(true);
+      } else if (e instanceof AppleNotesImportError && e.kind === 'notFound') {
+        setImportError(
+          'Apple Notes data folder not found. Open the Apple Notes app at least once, then try again.',
+        );
+      } else {
+        setImportError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setIsImporting(false);
     }
@@ -2481,7 +2489,6 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                         <div className="space-y-3 pl-6 border-l-2 border-[var(--color-border)]">
                           <p className="text-xs text-[var(--color-text-secondary)]">
                             Import notes directly from the Apple Notes app. Folders become hierarchical tags.
-                            Requires Full Disk Access for Atomic in System Settings → Privacy &amp; Security.
                           </p>
 
                           <label className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)] cursor-pointer">
@@ -2515,6 +2522,33 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                               </>
                             )}
                           </Button>
+
+                          {appleNotesNeedsFda && (
+                            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-sm space-y-2">
+                              <div className="text-amber-400 font-medium">Full Disk Access required</div>
+                              <p className="text-xs text-[var(--color-text-secondary)]">
+                                Grant Atomic access to read your Apple Notes data, then try the import again.
+                                Atomic appears in the Full Disk Access list after you click the button below.
+                              </p>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => openExternalUrl(MACOS_FULL_DISK_ACCESS_URL)}
+                                >
+                                  Open System Settings
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={handleAppleNotesImport}
+                                  disabled={isImporting}
+                                >
+                                  Try again
+                                </Button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

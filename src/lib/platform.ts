@@ -23,18 +23,6 @@ export async function pickDirectory(
   return null; // Not available in web/remote mode
 }
 
-/**
- * Absolute path to the user's Apple Notes data folder on macOS.
- * Used as the defaultPath for the Apple Notes import picker so the user
- * doesn't have to navigate into the hidden Library subtree themselves.
- */
-export async function getAppleNotesPath(): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { homeDir } = await import('@tauri-apps/api/path');
-  const home = await homeDir();
-  return `${home}/Library/Group Containers/group.com.apple.notes`;
-}
-
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
 }

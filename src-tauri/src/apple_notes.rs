@@ -21,8 +21,7 @@ use std::path::{Path, PathBuf};
 const CORETIME_OFFSET: f64 = 978_307_200.0;
 
 const NOTE_DB: &str = "NoteStore.sqlite";
-/// The user must pick *this* folder name — guards against accidental misuse.
-const EXPECTED_FOLDER_NAME: &str = "group.com.apple.notes";
+const APPLE_NOTES_RELATIVE_PATH: &str = "Library/Group Containers/group.com.apple.notes";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Account {
@@ -71,38 +70,106 @@ pub struct AppleNotesData {
     pub notes: Vec<Note>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum AppleNotesError {
-    #[error("Selected folder is not named '{EXPECTED_FOLDER_NAME}'")]
-    WrongFolder,
-    #[error("NoteStore.sqlite not found in the selected folder")]
-    DbMissing,
-    #[error("Failed to copy NoteStore.sqlite: {0}")]
-    Copy(#[from] std::io::Error),
-    #[error("Database error: {0}")]
-    Db(#[from] rusqlite::Error),
+/// Stable error categories the frontend matches on. `PermissionDenied` in
+/// particular is load-bearing — the UI shows a "grant Full Disk Access"
+/// affordance when it sees this kind.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleNotesError {
+    pub kind: AppleNotesErrorKind,
+    pub message: String,
 }
 
-impl From<AppleNotesError> for String {
-    fn from(err: AppleNotesError) -> String {
-        err.to_string()
+#[derive(Debug, Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum AppleNotesErrorKind {
+    /// `~/Library/Group Containers/group.com.apple.notes` isn't readable —
+    /// almost always means the user hasn't granted Full Disk Access yet.
+    PermissionDenied,
+    /// Folder / DB file is missing (FDA granted but Apple Notes has never
+    /// been opened on this Mac).
+    NotFound,
+    /// Couldn't determine $HOME.
+    NoHomeDir,
+    /// Everything else — SQLite errors, corrupt files, etc.
+    Other,
+}
+
+impl AppleNotesError {
+    fn permission_denied(msg: impl Into<String>) -> Self {
+        Self { kind: AppleNotesErrorKind::PermissionDenied, message: msg.into() }
+    }
+    fn not_found(msg: impl Into<String>) -> Self {
+        Self { kind: AppleNotesErrorKind::NotFound, message: msg.into() }
+    }
+    fn no_home_dir() -> Self {
+        Self {
+            kind: AppleNotesErrorKind::NoHomeDir,
+            message: "Could not determine your home directory.".into(),
+        }
+    }
+    fn other(msg: impl Into<String>) -> Self {
+        Self { kind: AppleNotesErrorKind::Other, message: msg.into() }
     }
 }
 
-/// Top-level Tauri command.
+impl From<std::io::Error> for AppleNotesError {
+    fn from(err: std::io::Error) -> Self {
+        match err.kind() {
+            std::io::ErrorKind::PermissionDenied => {
+                AppleNotesError::permission_denied(err.to_string())
+            }
+            std::io::ErrorKind::NotFound => AppleNotesError::not_found(err.to_string()),
+            _ => AppleNotesError::other(err.to_string()),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for AppleNotesError {
+    fn from(err: rusqlite::Error) -> Self {
+        AppleNotesError::other(format!("SQLite: {err}"))
+    }
+}
+
+/// Resolve the default Apple Notes folder path from $HOME.
+fn default_notes_folder() -> Result<PathBuf, AppleNotesError> {
+    let home = home_dir().ok_or_else(AppleNotesError::no_home_dir)?;
+    Ok(home.join(APPLE_NOTES_RELATIVE_PATH))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    // std::env::home_dir was un-deprecated in 1.86 and returns the right value
+    // on macOS for our purposes (respects $HOME, falls back to getpwuid).
+    #[allow(deprecated)]
+    std::env::home_dir()
+}
+
+/// Top-level Tauri command. `folder_path` is optional — when omitted we fall
+/// back to `~/Library/Group Containers/group.com.apple.notes`, which is the
+/// only path any real caller cares about.
 #[tauri::command]
-pub fn read_apple_notes(folder_path: String) -> Result<AppleNotesData, String> {
-    read_apple_notes_inner(Path::new(&folder_path)).map_err(Into::into)
+pub fn read_apple_notes(folder_path: Option<String>) -> Result<AppleNotesData, AppleNotesError> {
+    let path = match folder_path {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => default_notes_folder()?,
+    };
+    read_apple_notes_inner(&path)
 }
 
 fn read_apple_notes_inner(folder_path: &Path) -> Result<AppleNotesData, AppleNotesError> {
-    if folder_path.file_name().and_then(|n| n.to_str()) != Some(EXPECTED_FOLDER_NAME) {
-        return Err(AppleNotesError::WrongFolder);
-    }
-
     let source_db = folder_path.join(NOTE_DB);
-    if !source_db.exists() {
-        return Err(AppleNotesError::DbMissing);
+
+    // `exists()` can't distinguish "not there" from "not allowed to look";
+    // try to open the file and let the OS error speak for itself.
+    match std::fs::File::open(&source_db) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppleNotesError::not_found(format!(
+                "NoteStore.sqlite not found at {}",
+                source_db.display()
+            )));
+        }
+        Err(err) => return Err(err.into()),
     }
 
     let cloned_db = clone_db_to_temp(&source_db)?;
@@ -112,7 +179,7 @@ fn read_apple_notes_inner(folder_path: &Path) -> Result<AppleNotesData, AppleNot
 /// Copy the SQLite DB (plus -shm and -wal sidecars if present) to the system
 /// temp directory so we can open it read-only without interfering with the live
 /// DB that Apple Notes may hold open.
-fn clone_db_to_temp(source_db: &Path) -> Result<PathBuf, std::io::Error> {
+fn clone_db_to_temp(source_db: &Path) -> Result<PathBuf, AppleNotesError> {
     let tmp_dir = std::env::temp_dir();
     let cloned_db = tmp_dir.join(NOTE_DB);
 
@@ -362,18 +429,26 @@ mod tests {
     }
 
     #[test]
-    fn wrong_folder_name_is_rejected() {
-        let err = read_apple_notes_inner(Path::new("/tmp/not-it")).unwrap_err();
-        assert!(matches!(err, AppleNotesError::WrongFolder));
+    fn missing_db_reports_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = read_apple_notes_inner(tmp.path()).unwrap_err();
+        assert!(matches!(err.kind, AppleNotesErrorKind::NotFound));
     }
 
     #[test]
-    fn missing_db_is_reported() {
-        let tmp = tempfile::tempdir().unwrap();
-        let folder = tmp.path().join(EXPECTED_FOLDER_NAME);
-        std::fs::create_dir_all(&folder).unwrap();
-        let err = read_apple_notes_inner(&folder).unwrap_err();
-        assert!(matches!(err, AppleNotesError::DbMissing));
+    fn permission_denied_is_propagated() {
+        // Open a path that fs::File::open will reject with PermissionDenied.
+        // `/private/var/root` exists but isn't readable as a regular user on
+        // macOS. On other platforms / CI setups the exact error can be
+        // ErrorKind::NotFound or similar, so we gate the assertion on what
+        // the OS actually returned.
+        let path = Path::new("/private/var/root");
+        let direct = std::fs::File::open(path.join(NOTE_DB));
+        if matches!(direct.as_ref().err().map(|e| e.kind()), Some(std::io::ErrorKind::PermissionDenied))
+        {
+            let err = read_apple_notes_inner(path).unwrap_err();
+            assert!(matches!(err.kind, AppleNotesErrorKind::PermissionDenied));
+        }
     }
 
     #[test]
@@ -438,12 +513,10 @@ mod tests {
     #[test]
     fn end_to_end_via_clone_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let folder = tmp.path().join(EXPECTED_FOLDER_NAME);
-        std::fs::create_dir_all(&folder).unwrap();
-        let source_db = folder.join(NOTE_DB);
+        let source_db = tmp.path().join(NOTE_DB);
         build_fixture(&source_db);
 
-        let data = read_apple_notes_inner(&folder).unwrap();
+        let data = read_apple_notes_inner(tmp.path()).unwrap();
         assert_eq!(data.accounts.len(), 1);
         assert!(data.notes.iter().any(|n| n.title == "Good Note"));
     }
