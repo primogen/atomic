@@ -2,6 +2,10 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.22.2 — 2026-04-15
+
+- Add recency filter (`since_days`) to Chat and MCP search tools, letting the AI agent narrow results to recent notes when answering time-sensitive questions (e.g. "what did I write last week?")
+
 ## v1.22.1 — 2026-04-15
 
 - Fix scheduled tasks (e.g. daily briefing) only running for one database in multi-database deployments
