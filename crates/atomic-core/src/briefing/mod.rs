@@ -85,10 +85,12 @@ pub async fn run_briefing(
 
     let new_atoms = core
         .storage()
-        .list_new_atoms_since_sync(&since_str, MAX_NEW_ATOMS as i32)?;
+        .list_new_atoms_since_sync(&since_str, MAX_NEW_ATOMS as i32)
+        .await?;
     let total_new = core
         .storage()
-        .count_new_atoms_since_sync(&since_str)?;
+        .count_new_atoms_since_sync(&since_str)
+        .await?;
 
     tracing::info!(
         visible = new_atoms.len(),
@@ -109,7 +111,8 @@ pub async fn run_briefing(
         };
         let saved = core
             .storage()
-            .insert_briefing_sync(&briefing, &[])?;
+            .insert_briefing_sync(&briefing, &[])
+            .await?;
         tracing::info!(briefing_id = %saved.briefing.id, "[briefing] Saved empty briefing (no new atoms)");
         return Ok(saved);
     }
@@ -149,7 +152,8 @@ pub async fn run_briefing(
 
     let saved = core
         .storage()
-        .insert_briefing_sync(&briefing, &citations)?;
+        .insert_briefing_sync(&briefing, &citations)
+        .await?;
     tracing::info!(
         briefing_id = %saved.briefing.id,
         citations = saved.citations.len(),

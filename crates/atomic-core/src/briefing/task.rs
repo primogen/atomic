@@ -32,10 +32,10 @@ impl ScheduledTask for DailyBriefingTask {
     }
 
     async fn run(&self, core: &AtomicCore, ctx: &TaskContext) -> Result<(), TaskError> {
-        if !task_state::is_enabled(core, TASK_ID, DEFAULT_ENABLED) {
+        if !task_state::is_enabled(core, TASK_ID, DEFAULT_ENABLED).await {
             return Err(TaskError::Disabled);
         }
-        if !task_state::is_due(core, TASK_ID, DEFAULT_INTERVAL, DEFAULT_ENABLED) {
+        if !task_state::is_due(core, TASK_ID, DEFAULT_INTERVAL, DEFAULT_ENABLED).await {
             return Err(TaskError::NotDue);
         }
 

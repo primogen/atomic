@@ -19,12 +19,12 @@ pub struct AppState {
 impl AppState {
     /// Resolve which database core to use for a request.
     /// Checks X-Atomic-Database header, then ?db= query param, then falls back to active.
-    pub fn resolve_core(&self, req: &actix_web::HttpRequest) -> Result<AtomicCore, atomic_core::AtomicCoreError> {
+    pub async fn resolve_core(&self, req: &actix_web::HttpRequest) -> Result<AtomicCore, atomic_core::AtomicCoreError> {
         // Check X-Atomic-Database header
         if let Some(db_id) = req.headers().get("X-Atomic-Database")
             .and_then(|v| v.to_str().ok())
         {
-            return self.manager.get_core(db_id);
+            return self.manager.get_core(db_id).await;
         }
 
         // Check ?db= query parameter
@@ -35,11 +35,11 @@ impl AppState {
                 if parts.next()? == "db" { parts.next() } else { None }
             })
         {
-            return self.manager.get_core(db_id);
+            return self.manager.get_core(db_id).await;
         }
 
         // Default to active database
-        self.manager.active_core()
+        self.manager.active_core().await
     }
 }
 

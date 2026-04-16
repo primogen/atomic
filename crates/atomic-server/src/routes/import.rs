@@ -37,7 +37,7 @@ pub async fn import_obsidian_vault(
         body.max_notes,
         on_event,
         on_progress,
-    ) {
+    ).await {
         Ok(result) => HttpResponse::Ok().json(result),
         Err(e) => crate::error::error_response(e),
     }

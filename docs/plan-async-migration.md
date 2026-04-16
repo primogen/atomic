@@ -1,55 +1,80 @@
-# Plan: Async AtomicCore — Eliminate the Sync Bridge for Postgres Scalability
+# Plan: Async AtomicCore — Production-Ready Postgres for Public Deployment
 
-## Context
+## Goal
 
-The storage abstraction is complete: `StorageBackend` dispatches to either SQLite or Postgres at runtime. However, every Postgres call goes through a sync→async bridge (`block_on`) that spawns a background thread per DB operation. With actix-web's `current_thread` worker model, this means:
+Deploy a public-facing Atomic instance backed by Postgres. Users without tokens get scoped read access; authenticated users get full access. This plan addresses the **scalability prerequisite**: making the server handle concurrent public traffic without exhausting threads or connections.
 
-1. Route handler → `web::block()` → threadpool thread
-2. Threadpool thread → dispatch method → detects tokio runtime → spawns another thread
-3. That thread → `PG_RUNTIME.block_on()` → actual sqlx query
+Auth, multi-tenancy, and access scoping are separate concerns — they depend on this work being done first.
 
-Three layers of thread coordination per database call. This caps throughput at roughly the size of the thread pools, and adds ~100μs of overhead per call from thread spawning/joining.
+## Why Async Is the Bottleneck
 
-**Goal:** Make AtomicCore natively async so Postgres calls go directly through `async trait` methods with zero bridging. SQLite calls use `spawn_blocking` internally (one thread hop instead of three).
+Every database call currently flows through a sync→async bridge:
 
-## Current State
+```
+actix route handler (async)
+  → web::block() (move to threadpool)
+    → AtomicCore sync method
+      → dispatch! macro
+        → Postgres: block_on() on PG_RUNTIME (spawn thread, block on future)
+        → SQLite: direct sync call
+```
 
-- **111 dispatch methods** in `storage/mod.rs` (the `dispatch!` macro), all bridging sync→async for Postgres
-- **~80 public sync methods** on `AtomicCore` that call these dispatch methods
-- **~50 actix-web route handlers** that wrap AtomicCore sync calls in `web::block()`
-- **3 async methods** on AtomicCore already: `search()`, `generate_wiki()`, `update_wiki()`, `send_chat_message()`
-- **Embedding pipeline** already async internally but calls `*_sync` dispatch methods
-- **Agent/wiki modules** already async but call `*_sync` dispatch methods
-- **Tauri desktop** — no impact, uses HTTP API via sidecar
+For a single-user desktop app with SQLite, this is fine. For a public server with Postgres and N concurrent users:
+
+1. **Thread exhaustion** — Each request occupies a threadpool thread (from `web::block`) AND spawns another thread for the `block_on` bridge. With actix's default threadpool, ~20 concurrent requests saturate the system.
+2. **Connection waste** — Each `block_on` call acquires a Postgres connection, blocks a thread waiting for I/O, then releases. No pipelining. A single request that makes 5 sequential DB calls holds a thread for 5× the actual I/O time.
+3. **Latency overhead** — ~100μs per call from thread spawning/joining, compounding across sequential DB calls within a request.
+
+After the migration, the same request path becomes:
+
+```
+actix route handler (async)
+  → AtomicCore async method
+    → StorageBackend async dispatch
+      → Postgres: sqlx future runs directly on actix's tokio runtime
+      → SQLite: spawn_blocking (one threadpool hop)
+```
+
+Zero thread coordination for Postgres. The sqlx connection pool handles concurrency natively. A request making 5 DB calls uses one task on the async runtime, not 5 blocked threads.
+
+## Current State (as of codebase analysis)
+
+| Component | Count | Description |
+|-----------|-------|-------------|
+| `dispatch!` macro methods | ~110 | Sync bridge wrappers in `storage/mod.rs` |
+| `pub fn` on AtomicCore | 111 | Sync public API methods in `lib.rs` |
+| `pub async fn` on AtomicCore | 14 | Already-async methods (search, chat, wiki, etc.) |
+| `web::block()` in routes | 20 | Across 9 route files |
+| `blocking_ok` usage | 11 files | Helper that wraps `web::block` + error mapping |
+| `as_sqlite()` bypass paths | 4 files | Special-case branches avoiding the storage trait |
+| Storage traits | All async | `#[async_trait]` — the target interface already exists |
 
 ## Migration Steps
 
 ### Step 1: Make AtomicCore Methods Async
 
-Convert all ~80 public methods from `pub fn` to `pub async fn`. The method bodies stay the same — they call dispatch methods which handle the backend routing. The `async` keyword is needed so that later steps can remove the sync bridge.
+Convert 111 `pub fn` methods to `pub async fn`. Method bodies stay the same — they still call the sync dispatch methods. The `async` keyword is preparation so that callers can be updated.
 
-**Pattern:**
+The 14 already-async methods stay as-is. Reconcile any naming inconsistencies (some call dispatch methods, some bypass to `as_sqlite()`).
+
 ```rust
 // Before
-pub fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>, AtomicCoreError> {
+pub fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>> {
     self.storage.get_atom_impl(id)
 }
 
 // After
-pub async fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>, AtomicCoreError> {
+pub async fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>> {
     self.storage.get_atom_impl(id)  // Still sync dispatch for now
 }
 ```
-
-This is a breaking API change — all callers add `.await`. But the behavior is identical; we're just adding the `async` annotation in preparation.
 
 **Files:** `crates/atomic-core/src/lib.rs`
 
 ### Step 2: Update Server Route Handlers
 
-Remove `web::block()` wrappers from all actix-web handlers. Since AtomicCore methods are now async, handlers can `.await` them directly.
+Remove `web::block()` wrappers and `blocking_ok` helper. Since AtomicCore methods are now async, handlers `.await` them directly.
 
-**Pattern:**
 ```rust
 // Before
 pub async fn get_atom(db: Db, path: web::Path<String>) -> HttpResponse {
@@ -63,26 +88,22 @@ pub async fn get_atom(db: Db, path: web::Path<String>) -> HttpResponse {
 
 // After
 pub async fn get_atom(db: Db, path: web::Path<String>) -> HttpResponse {
-    let id = path.into_inner();
-    match db.0.get_atom(&id).await {
+    match db.0.get_atom(&path.into_inner()).await {
         Ok(Some(atom)) => HttpResponse::Ok().json(atom),
         ...
     }
 }
 ```
 
-The `blocking_ok` helper and similar wrappers get replaced with a simpler `async_ok` pattern.
-
-**Files:** All files in `crates/atomic-server/src/routes/`
+**Files:** All files in `crates/atomic-server/src/routes/`, `crates/atomic-server/src/error.rs`
 
 ### Step 3: Replace Dispatch Macro with Async Routing
 
-Replace the 111-method `dispatch!` macro with direct async trait calls on `StorageBackend`. Each method calls the trait method directly — for Postgres it's natively async, for SQLite it wraps in `spawn_blocking`.
+Replace the ~110 `dispatch!` methods with async methods on `StorageBackend`. SQLite wraps in `spawn_blocking`; Postgres calls the trait directly.
 
-**Pattern:**
 ```rust
 impl StorageBackend {
-    pub async fn get_atom(&self, id: &str) -> StorageResult<Option<AtomWithTags>> {
+    pub async fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>> {
         match self {
             StorageBackend::Sqlite(s) => {
                 let s = s.clone();
@@ -100,24 +121,21 @@ impl StorageBackend {
 }
 ```
 
-This eliminates `PG_RUNTIME`, the `block_on` function, and the thread-spawning bridge entirely. For Postgres: zero overhead — the sqlx future runs directly on actix's tokio runtime. For SQLite: one `spawn_blocking` hop to the threadpool (same as current `web::block` pattern).
+This is the step that eliminates the performance bottleneck. After this, Postgres calls run natively on the async runtime.
 
 **Files:** `crates/atomic-core/src/storage/mod.rs`
 
-### Step 4: Update Internal Modules
+### Step 4: Update Internal Async Modules
 
-The embedding pipeline, agent, wiki, and search modules already use `StorageBackend` but call `*_sync` methods. Change them to `.await` the new async methods.
+The embedding pipeline, agent, wiki, and search modules are already async but call `_sync` dispatch methods. Switch them to `.await` the new async `StorageBackend` methods.
 
-**Pattern:**
 ```rust
 // Before (embedding.rs)
-storage.set_embedding_status_sync(atom_id, "processing")?;
+storage.claim_pending_embeddings_sync(PENDING_BATCH_SIZE)?;
 
 // After
-storage.set_embedding_status(atom_id, "processing").await?;
+storage.claim_pending_embeddings(PENDING_BATCH_SIZE).await?;
 ```
-
-These modules are already async, so this is a mechanical find-and-replace of `_sync` / `_impl` suffixed calls with `.await` versions.
 
 **Files:**
 - `crates/atomic-core/src/embedding.rs`
@@ -125,65 +143,63 @@ These modules are already async, so this is a mechanical find-and-replace of `_s
 - `crates/atomic-core/src/wiki/mod.rs`, `wiki/centroid.rs`, `wiki/agentic.rs`
 - `crates/atomic-core/src/search.rs`
 
-### Step 5: Remove SQLite Special-Case Paths
+### Step 5: Remove Backend-Specific Bypass Paths
 
-Currently `search()`, `send_chat_message()`, and wiki generation have `if let Some(sqlite) = self.storage.as_sqlite()` branches that bypass the storage trait. With async dispatch these branches are unnecessary — both backends go through the same async trait interface.
+4 files use `as_sqlite()` / `as_postgres()` to branch around the storage trait. With async dispatch these branches are unnecessary — both backends go through the same async interface.
 
-Remove the `as_sqlite()` checks and unify to a single code path. Remove `as_sqlite()` and `as_postgres()` methods from `StorageBackend`.
+Remove `as_sqlite()`, `as_postgres()`, and `sqlite_db()` from `StorageBackend`. Unify to a single code path everywhere.
 
 **Files:**
-- `crates/atomic-core/src/lib.rs` (search, wiki save paths)
-- `crates/atomic-core/src/agent.rs` (execute_search_atoms)
-- `crates/atomic-core/src/storage/mod.rs` (remove as_sqlite/as_postgres)
+- `crates/atomic-core/src/lib.rs`
+- `crates/atomic-core/src/agent.rs`
+- `crates/atomic-core/src/manager.rs`
+- `crates/atomic-core/src/storage/mod.rs`
 
 ### Step 6: Cleanup
 
-- Remove `PG_RUNTIME` lazy static and `block_on` / `pg_runtime_block_on` functions
-- Remove `sqlite_db()` method from `StorageBackend`
-- Remove the `dispatch!` macro
-- Remove `*_sync` and `*_impl` suffixed methods from `SqliteStorage` (keep only the async trait impls, which internally use `spawn_blocking`)
+- Remove `PG_RUNTIME` static and `block_on` / `pg_runtime_block_on` functions
+- Remove the `dispatch!` macro definition
+- Remove `_sync` and `_impl` suffixed methods from `SqliteStorage` (keep only async trait impls with `spawn_blocking` internally)
+- Evaluate whether `executor::BACKGROUND` runtime is still needed — background tasks could run on the caller's tokio runtime now
 - Clean up unused imports
 
-**Files:** `crates/atomic-core/src/storage/mod.rs`, `storage/sqlite/*.rs`
+**Files:** `crates/atomic-core/src/storage/mod.rs`, `storage/sqlite/*.rs`, `crates/atomic-core/src/executor.rs`
 
-## Execution Order and Dependencies
+## Execution Order
 
 ```
-Step 1 (AtomicCore async) ──→ Step 2 (Routes)
+Step 1 (AtomicCore async) ──→ Step 2 (Routes — can parallel with 3)
          │
-         └──────────────────→ Step 3 (Dispatch replacement)
+         └──────────────────→ Step 3 (Async dispatch — can parallel with 2)
                                       │
                                       └──→ Step 4 (Internal modules)
                                                     │
-                                                    └──→ Step 5 (Remove special cases)
+                                                    └──→ Step 5 (Remove bypass paths)
                                                                   │
                                                                   └──→ Step 6 (Cleanup)
 ```
 
-Steps 1→2 and 1→3 can be done in parallel after Step 1. Steps 4-6 are sequential.
-
 ## What Stays The Same
 
-- **Storage trait definitions** (`traits.rs`) — already async, no changes
-- **PostgresStorage implementations** — already async, no changes
-- **SqliteStorage trait implementations** — already have async wrappers, just need `spawn_blocking` added inside
-- **Tauri desktop app** — uses HTTP API, no AtomicCore calls
-- **Frontend** — HTTP API unchanged
-- **Test suite** — tests use `#[tokio::test]`, adding `.await` is mechanical
+- **Storage trait definitions** (`traits.rs`) — already async
+- **PostgresStorage implementations** — already async
+- **Frontend** — HTTP/WebSocket API unchanged
+- **Tauri desktop** — uses sidecar HTTP, no AtomicCore calls
+- **iOS app** — HTTP client, unaffected
 
 ## Verification
 
 1. `cargo test --workspace` — all tests pass with `.await` additions
-2. `cargo test -p atomic-core --test storage_tests --features postgres -- --test-threads=1` with Postgres running — parameterized tests pass
-3. Benchmark: measure p50/p99 latency of `/api/atoms` endpoint before and after, under concurrent load, comparing SQLite and Postgres
-4. Load test: 50 concurrent users hitting the API — server should not exhaust thread pools
+2. `cargo test -p atomic-core --test storage_tests --features postgres` — parameterized storage tests pass on Postgres
+3. Load test: measure p50/p99 latency of `/api/atoms` under 50 concurrent connections, SQLite vs Postgres, before vs after
+4. Confirm thread count under load drops significantly (no more per-call thread spawning)
 
-## Scaling Considerations Beyond Async
+## What Comes After (Not In Scope)
 
-Once the async migration is done, further scaling for organizations:
+Once async is done, the server is ready for public deployment work:
 
-- **Connection pooling tuning** — `PgPoolOptions::max_connections` based on expected concurrency
-- **Read replicas** — `PostgresStorage` could hold separate read/write pools
-- **Request-scoped DB** — currently `Db` extractor resolves core per-request, which is correct for multi-db; for single-db deployments, skip the resolution overhead
-- **Caching layer** — frequently-accessed data (tag tree, settings) cached in-memory with TTL, reducing DB round-trips
-- **Horizontal scaling** — multiple atomic-server instances sharing one Postgres, with WebSocket events via Redis pub/sub instead of in-process broadcast channels
+- **Public access scoping** — unauthenticated read access to specific databases/tags
+- **Connection pool tuning** — `PgPoolOptions::max_connections` sized for expected concurrency
+- **Rate limiting** — per-IP or per-token request limits for public endpoints
+- **Horizontal scaling** — multiple instances sharing one Postgres, WebSocket events via Redis pub/sub
+- **Caching** — in-memory TTL cache for hot data (tag tree, settings) to reduce DB round-trips

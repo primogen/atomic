@@ -157,7 +157,7 @@ async fn handle_search(
     tracing::debug!(query = %query, limit, "[wiki/agentic] search");
 
     // Perform hybrid search: keyword + vector, merged via RRF
-    let keyword_results = match storage.keyword_search_chunks_sync(&query, limit * 2, scope_tag_ids, None) {
+    let keyword_results = match storage.keyword_search_chunks_sync(&query, limit * 2, scope_tag_ids, None).await {
         Ok(r) => r,
         Err(e) => return format!("Keyword search error: {}", e),
     };
@@ -168,7 +168,7 @@ async fn handle_search(
             let embed_config = EmbeddingConfig::new(provider_config.embedding_model());
             match provider.embed_batch(&[query.clone()], &embed_config).await {
                 Ok(embeddings) if !embeddings.is_empty() && !embeddings[0].is_empty() => {
-                    match storage.vector_search_chunks_sync(&embeddings[0], limit * 2, 0.3, scope_tag_ids, None) {
+                    match storage.vector_search_chunks_sync(&embeddings[0], limit * 2, 0.3, scope_tag_ids, None).await {
                         Ok(r) => r,
                         Err(_) => Vec::new(),
                     }
@@ -469,9 +469,9 @@ pub(crate) async fn generate(
     tracing::info!(tag_name = %ctx.tag_name, budget_tokens = max_tokens, "[wiki/agentic] Starting agentic research");
 
     // Get scope tag IDs and atom count
-    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id)
+    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id).await
         .map_err(|e| e.to_string())?;
-    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids)
+    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids).await
         .map_err(|e| e.to_string())?;
 
     if atom_count == 0 {
@@ -550,9 +550,9 @@ pub(crate) async fn research_for_update(
         "[wiki/agentic] Starting agentic research for update"
     );
 
-    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id)
+    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id).await
         .map_err(|e| e.to_string())?;
-    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids)
+    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids).await
         .map_err(|e| e.to_string())?;
 
     let mut rc = ResearchContext::new(

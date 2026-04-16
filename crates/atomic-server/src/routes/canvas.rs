@@ -1,7 +1,7 @@
 //! Canvas position routes
 
 use crate::db_extractor::Db;
-use crate::error::blocking_ok;
+use crate::error::ok_or_error;
 use actix_web::{web, HttpResponse};
 use atomic_core::{AtomPosition, CanvasAtomPosition, CanvasClusterLabel, CanvasEdgeData, GlobalCanvasData};
 use serde::{Deserialize, Serialize};
@@ -10,8 +10,7 @@ use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(get, path = "/api/canvas/positions", responses((status = 200, description = "All atom positions", body = Vec<AtomPosition>)), tag = "canvas")]
 pub async fn get_positions(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.get_atom_positions()).await
+    ok_or_error(db.0.get_atom_positions().await)
 }
 
 #[utoipa::path(put, path = "/api/canvas/positions", request_body = Vec<AtomPosition>, responses((status = 200, description = "Positions saved")), tag = "canvas")]
@@ -20,18 +19,15 @@ pub async fn save_positions(
     body: web::Json<Vec<AtomPosition>>,
 ) -> HttpResponse {
     let positions = body.into_inner();
-    let core = db.0;
-    match web::block(move || core.save_atom_positions(&positions)).await {
-        Ok(Ok(())) => HttpResponse::Ok().json(serde_json::json!({"status": "ok"})),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.save_atom_positions(&positions).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"status": "ok"})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
 #[utoipa::path(get, path = "/api/canvas/atoms-with-embeddings", responses((status = 200, description = "Atoms with embedding vectors", body = Vec<atomic_core::AtomWithEmbedding>)), tag = "canvas")]
 pub async fn get_atoms_with_embeddings(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.get_atoms_with_embeddings()).await
+    ok_or_error(db.0.get_atoms_with_embeddings().await)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -55,8 +51,7 @@ pub async fn get_canvas_level(
 ) -> HttpResponse {
     let parent_id = query.parent_id.clone();
     let children_hint = body.and_then(|b| b.into_inner().children_hint);
-    let core = db.0;
-    blocking_ok(move || core.get_canvas_level(parent_id.as_deref(), children_hint)).await
+    ok_or_error(db.0.get_canvas_level(parent_id.as_deref(), children_hint).await)
 }
 
 /// Compute PCA 2D projection and return all atoms with positions, edges, and cluster labels
@@ -71,19 +66,16 @@ pub struct GlobalCanvasQuery {
 #[utoipa::path(get, path = "/api/canvas/global", params(GlobalCanvasQuery), responses((status = 200, description = "Global canvas data", body = atomic_core::GlobalCanvasData)), tag = "canvas")]
 pub async fn get_global_canvas(db: Db, query: web::Query<GlobalCanvasQuery>) -> HttpResponse {
     let source_prefix = query.into_inner().source_prefix;
-    let core = db.0;
 
-    match actix_web::web::block(move || core.compute_and_get_canvas_data()).await {
-        Ok(Ok(data)) => {
+    match db.0.compute_and_get_canvas_data().await {
+        Ok(data) => {
             if let Some(ref prefix) = source_prefix {
                 HttpResponse::Ok().json(filter_canvas_by_source_prefix(&data, prefix))
             } else {
                 HttpResponse::Ok().json(&*data)
             }
         }
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": format!("Thread pool error: {}", e)})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 

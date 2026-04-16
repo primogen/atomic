@@ -21,12 +21,12 @@ struct TestCtx {
 }
 
 impl TestCtx {
-    fn new() -> Self {
+    async fn new() -> Self {
         let temp = tempfile::TempDir::new().unwrap();
         let manager = Arc::new(
             atomic_core::DatabaseManager::new(temp.path()).unwrap(),
         );
-        let (_info, raw_token) = manager.active_core().unwrap().create_api_token("test").unwrap();
+        let (_info, raw_token) = manager.active_core().await.unwrap().create_api_token("test").await.unwrap();
         let (event_tx, _) = broadcast::channel(16);
         let state = web::Data::new(atomic_server::state::AppState {
             manager,
@@ -75,7 +75,7 @@ fn test_app(
 
 #[actix_web::test]
 async fn test_create_and_get_atom() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create
@@ -109,7 +109,7 @@ async fn test_create_and_get_atom() {
 
 #[actix_web::test]
 async fn test_get_atom_not_found() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     let req = actix_test::TestRequest::get()
@@ -122,7 +122,7 @@ async fn test_get_atom_not_found() {
 
 #[actix_web::test]
 async fn test_list_atoms_empty() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     let req = actix_test::TestRequest::get()
@@ -139,7 +139,7 @@ async fn test_list_atoms_empty() {
 
 #[actix_web::test]
 async fn test_list_atoms_with_pagination() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create 3 atoms
@@ -169,7 +169,7 @@ async fn test_list_atoms_with_pagination() {
 
 #[actix_web::test]
 async fn test_update_atom() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create
@@ -197,7 +197,7 @@ async fn test_update_atom() {
 
 #[actix_web::test]
 async fn test_delete_atom() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create
@@ -229,7 +229,7 @@ async fn test_delete_atom() {
 
 #[actix_web::test]
 async fn test_bulk_create_atoms() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     let req = actix_test::TestRequest::post()
@@ -251,7 +251,7 @@ async fn test_bulk_create_atoms() {
 
 #[actix_web::test]
 async fn test_create_atom_with_source_url() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     let req = actix_test::TestRequest::post()
@@ -275,7 +275,7 @@ async fn test_create_atom_with_source_url() {
 
 #[actix_web::test]
 async fn test_create_and_list_tags() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create a tag
@@ -306,7 +306,7 @@ async fn test_create_and_list_tags() {
 
 #[actix_web::test]
 async fn test_create_atom_with_tags() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create a tag first
@@ -339,7 +339,7 @@ async fn test_create_atom_with_tags() {
 
 #[actix_web::test]
 async fn test_update_tag() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create
@@ -367,7 +367,7 @@ async fn test_update_tag() {
 
 #[actix_web::test]
 async fn test_delete_tag() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     // Create
@@ -395,7 +395,7 @@ async fn test_delete_tag() {
 
 #[actix_web::test]
 async fn test_unauthenticated_request_rejected() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(test_app(&ctx)).await;
 
     let req = actix_test::TestRequest::get()
@@ -418,7 +418,7 @@ async fn test_unauthenticated_request_rejected() {
 
 #[actix_web::test]
 async fn test_openapi_spec_is_valid() {
-    let ctx = TestCtx::new();
+    let ctx = TestCtx::new().await;
     let app = actix_test::init_service(
         App::new()
             .app_data(ctx.state.clone())

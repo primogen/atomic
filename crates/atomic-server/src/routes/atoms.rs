@@ -1,7 +1,7 @@
 //! Atom and Tag CRUD routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use crate::event_bridge::embedding_event_callback;
 use crate::state::{AppState, ServerEvent};
 use actix_web::{web, HttpResponse};
@@ -77,8 +77,7 @@ pub async fn get_atoms(
         sort_by,
         sort_order,
     };
-    let core = db.0;
-    blocking_ok(move || core.list_atoms(&params)).await
+    ok_or_error(db.0.list_atoms(&params).await)
 }
 
 #[utoipa::path(
@@ -90,8 +89,7 @@ pub async fn get_atoms(
     tag = "atoms",
 )]
 pub async fn get_source_list(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.get_source_list()).await
+    ok_or_error(db.0.get_source_list().await)
 }
 
 #[utoipa::path(
@@ -108,12 +106,10 @@ pub async fn get_source_list(db: Db) -> HttpResponse {
 )]
 pub async fn get_atom(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    match web::block(move || core.get_atom(&id)).await {
-        Ok(Ok(Some(atom))) => HttpResponse::Ok().json(atom),
-        Ok(Ok(None)) => HttpResponse::NotFound().json(serde_json::json!({"error": "Atom not found"})),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.get_atom(&id).await {
+        Ok(Some(atom)) => HttpResponse::Ok().json(atom),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Atom not found"})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -139,12 +135,10 @@ pub async fn get_atom_by_source_url(
     query: web::Query<GetAtomBySourceUrlQuery>,
 ) -> HttpResponse {
     let url = query.into_inner().url;
-    let core = db.0;
-    match web::block(move || core.get_atom_by_source_url(&url)).await {
-        Ok(Ok(Some(atom))) => HttpResponse::Ok().json(atom),
-        Ok(Ok(None)) => HttpResponse::NotFound().json(serde_json::json!({"error": "No atom found with this source URL"})),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.get_atom_by_source_url(&url).await {
+        Ok(Some(atom)) => HttpResponse::Ok().json(atom),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "No atom found with this source URL"})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -181,29 +175,25 @@ pub async fn create_atom(
 ) -> HttpResponse {
     let req = body.into_inner();
     let on_event = embedding_event_callback(state.event_tx.clone());
-    let core = db.0;
     let event_tx = state.event_tx.clone();
-    match web::block(move || {
-        core.create_atom(
-            atomic_core::CreateAtomRequest {
-                content: req.content,
-                source_url: req.source_url,
-                published_at: req.published_at,
-                tag_ids: req.tag_ids,
-                skip_if_source_exists: req.skip_if_source_exists,
-            },
-            on_event,
-        )
-    }).await {
-        Ok(Ok(Some(atom))) => {
+    match db.0.create_atom(
+        atomic_core::CreateAtomRequest {
+            content: req.content,
+            source_url: req.source_url,
+            published_at: req.published_at,
+            tag_ids: req.tag_ids,
+            skip_if_source_exists: req.skip_if_source_exists,
+        },
+        on_event,
+    ).await {
+        Ok(Some(atom)) => {
             let _ = event_tx.send(ServerEvent::AtomCreated { atom: atom.clone() });
             HttpResponse::Created().json(atom)
         }
-        Ok(Ok(None)) => {
+        Ok(None) => {
             HttpResponse::Ok().json(serde_json::json!({"skipped": true}))
         }
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -234,18 +224,15 @@ pub async fn bulk_create_atoms(
         })
         .collect();
     let on_event = embedding_event_callback(state.event_tx.clone());
-    let core = db.0;
     let event_tx = state.event_tx.clone();
-    match web::block(move || core.create_atoms_bulk(requests, on_event)).await {
-        Ok(Ok(result)) => {
+    match db.0.create_atoms_bulk(requests, on_event).await {
+        Ok(result) => {
             for atom in &result.atoms {
                 let _ = event_tx.send(ServerEvent::AtomCreated { atom: atom.clone() });
             }
             HttpResponse::Created().json(result)
         }
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -283,19 +270,16 @@ pub async fn update_atom(
     let id = path.into_inner();
     let req = body.into_inner();
     let on_event = embedding_event_callback(state.event_tx.clone());
-    let core = db.0;
-    blocking_ok(move || {
-        core.update_atom(
-            &id,
-            atomic_core::UpdateAtomRequest {
-                content: req.content,
-                source_url: req.source_url,
-                published_at: req.published_at,
-                tag_ids: req.tag_ids,
-            },
-            on_event,
-        )
-    }).await
+    ok_or_error(db.0.update_atom(
+        &id,
+        atomic_core::UpdateAtomRequest {
+            content: req.content,
+            source_url: req.source_url,
+            published_at: req.published_at,
+            tag_ids: req.tag_ids,
+        },
+        on_event,
+    ).await)
 }
 
 /// Update atom content/metadata without triggering embedding or tagging pipeline.
@@ -320,18 +304,15 @@ pub async fn update_atom_content_only(
 ) -> HttpResponse {
     let id = path.into_inner();
     let req = body.into_inner();
-    let core = db.0;
-    blocking_ok(move || {
-        core.update_atom_content_only(
-            &id,
-            atomic_core::UpdateAtomRequest {
-                content: req.content,
-                source_url: req.source_url,
-                published_at: req.published_at,
-                tag_ids: req.tag_ids,
-            },
-        )
-    }).await
+    ok_or_error(db.0.update_atom_content_only(
+        &id,
+        atomic_core::UpdateAtomRequest {
+            content: req.content,
+            source_url: req.source_url,
+            published_at: req.published_at,
+            tag_ids: req.tag_ids,
+        },
+    ).await)
 }
 
 #[utoipa::path(
@@ -348,8 +329,7 @@ pub async fn update_atom_content_only(
 )]
 pub async fn delete_atom(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.delete_atom(&id)).await
+    ok_or_error(db.0.delete_atom(&id).await)
 }
 
 // ==================== Tags ====================
@@ -386,8 +366,7 @@ pub async fn get_tags(
     query: web::Query<GetTagsQuery>,
 ) -> HttpResponse {
     let min_count = query.min_count.unwrap_or(2);
-    let core = db.0;
-    blocking_ok(move || core.get_all_tags_filtered(min_count)).await
+    ok_or_error(db.0.get_all_tags_filtered(min_count).await)
 }
 
 #[utoipa::path(
@@ -411,8 +390,7 @@ pub async fn get_tag_children(
     let min_count = query.min_count.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
     let offset = query.offset.unwrap_or(0);
-    let core = db.0;
-    blocking_ok(move || core.get_tag_children(&parent_id, min_count, limit, offset)).await
+    ok_or_error(db.0.get_tag_children(&parent_id, min_count, limit, offset).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -438,11 +416,9 @@ pub async fn create_tag(
     body: web::Json<CreateTagRequest>,
 ) -> HttpResponse {
     let req = body.into_inner();
-    let core = db.0;
-    match web::block(move || core.create_tag(&req.name, req.parent_id.as_deref())).await {
-        Ok(Ok(tag)) => HttpResponse::Created().json(tag),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.create_tag(&req.name, req.parent_id.as_deref()).await {
+        Ok(tag) => HttpResponse::Created().json(tag),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -474,8 +450,7 @@ pub async fn update_tag(
 ) -> HttpResponse {
     let id = path.into_inner();
     let req = body.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.update_tag(&id, &req.name, req.parent_id.as_deref())).await
+    ok_or_error(db.0.update_tag(&id, &req.name, req.parent_id.as_deref()).await)
 }
 
 #[utoipa::path(
@@ -498,8 +473,7 @@ pub async fn delete_tag(
 ) -> HttpResponse {
     let id = path.into_inner();
     let recursive = query.get("recursive").map(|v| v == "true").unwrap_or(false);
-    let core = db.0;
-    blocking_ok(move || core.delete_tag(&id, recursive)).await
+    ok_or_error(db.0.delete_tag(&id, recursive).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -528,11 +502,9 @@ pub async fn set_tag_autotag_target(
 ) -> HttpResponse {
     let id = path.into_inner();
     let value = body.into_inner().value;
-    let core = db.0;
-    match web::block(move || core.set_tag_autotag_target(&id, value)).await {
-        Ok(Ok(())) => HttpResponse::NoContent().finish(),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.set_tag_autotag_target(&id, value).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -560,6 +532,5 @@ pub async fn configure_autotag_targets(
     body: web::Json<ConfigureAutotagTargetsRequest>,
 ) -> HttpResponse {
     let req = body.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.configure_autotag_targets(&req.keep_defaults, &req.add_custom)).await
+    ok_or_error(db.0.configure_autotag_targets(&req.keep_defaults, &req.add_custom).await)
 }

@@ -226,7 +226,7 @@ async fn handle_read_atom(core: &AtomicCore, args: &serde_json::Value) -> String
         .unwrap_or(0)
         .max(0) as usize;
 
-    let atom = match core.get_atom(atom_id) {
+    let atom = match core.get_atom(atom_id).await {
         Ok(Some(a)) => a,
         Ok(None) => return format!("Error: no atom found with id {}", atom_id),
         Err(e) => return format!("Error fetching atom {}: {}", atom_id, e),
@@ -321,9 +321,10 @@ struct AgentState {
     done_called: bool,
 }
 
-fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), String> {
+async fn resolve_model(core: &AtomicCore) -> Result<(ProviderConfig, String), String> {
     let settings = core
         .get_settings()
+        .await
         .map_err(|e| format!("Failed to load settings: {}", e))?;
     let config = ProviderConfig::from_settings(&settings);
     // Mirror build_wiki_strategy_context: local providers use their own llm_model,
@@ -504,7 +505,7 @@ pub(crate) async fn generate(
     new_atoms: &[AtomWithTags],
     total_new: i32,
 ) -> Result<(String, Vec<(i32, String, String)>), String> {
-    let (provider_config, model) = resolve_model(core)?;
+    let (provider_config, model) = resolve_model(core).await?;
     tracing::info!(model = %model, atoms = new_atoms.len(), "[briefing/agentic] Running agent");
 
     let user_prompt = build_user_prompt(since, new_atoms, total_new);

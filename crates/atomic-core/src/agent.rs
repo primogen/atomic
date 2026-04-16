@@ -217,7 +217,7 @@ async fn execute_search_atoms(
     // Postgres path: use storage dispatch methods
     let settings = match external_settings {
         Some(s) => s,
-        None => storage.get_all_settings_sync().map_err(|e| e.to_string())?,
+        None => storage.get_all_settings_sync().await.map_err(|e| e.to_string())?,
     };
     let config = ProviderConfig::from_settings(&settings);
     let tag_id = scope_tag_ids.first().map(|s| s.as_str());
@@ -232,10 +232,10 @@ async fn execute_search_atoms(
     let cutoff = since_days.map(crate::search::since_days_cutoff);
     let cutoff_ref = cutoff.as_deref();
 
-    let keyword = storage.keyword_search_sync(query, limit * 2, tag_id, cutoff_ref)
+    let keyword = storage.keyword_search_sync(query, limit * 2, tag_id, cutoff_ref).await
         .map_err(|e| e.to_string())?;
     let semantic = if !embeddings.is_empty() && !embeddings[0].is_empty() {
-        storage.vector_search_sync(&embeddings[0], limit * 2, 0.3, tag_id, cutoff_ref)
+        storage.vector_search_sync(&embeddings[0], limit * 2, 0.3, tag_id, cutoff_ref).await
             .map_err(|e| e.to_string())?
     } else { vec![] };
 
@@ -248,7 +248,7 @@ async fn execute_search_atoms(
 const GET_ATOM_DEFAULT_LIMIT: usize = 500;
 const GET_ATOM_MAX_LIMIT: usize = 2000;
 
-fn execute_get_atom(
+async fn execute_get_atom(
     storage: &StorageBackend,
     atom_id: &str,
     offset: usize,
@@ -256,6 +256,7 @@ fn execute_get_atom(
 ) -> Result<Option<String>, String> {
     let Some(content) = storage
         .get_atom_content_impl(atom_id)
+        .await
         .map_err(|e| e.to_string())?
     else {
         return Ok(None);
@@ -616,7 +617,7 @@ where
                             .and_then(|v| v.as_u64())
                             .map(|v| (v as usize).clamp(1, GET_ATOM_MAX_LIMIT))
                             .unwrap_or(GET_ATOM_DEFAULT_LIMIT);
-                        match execute_get_atom(&storage, atom_id, offset, limit) {
+                        match execute_get_atom(&storage, atom_id, offset, limit).await {
                             Ok(Some(content)) => (content, 1),
                             Ok(None) => ("Atom not found".to_string(), 0),
                             Err(e) => (format!("Error: {}", e), 0),
@@ -739,7 +740,7 @@ where
     let settings_map = match external_settings {
         Some(s) => s,
         None => {
-            storage.get_all_settings_sync()
+            storage.get_all_settings_sync().await
                 .map_err(|e| e.to_string())?
         }
     };
@@ -769,17 +770,17 @@ where
     };
 
     // Save user message
-    storage.save_message_sync(conversation_id, "user", content)
+    storage.save_message_sync(conversation_id, "user", content).await
         .map_err(|e| e.to_string())?;
 
     // Get conversation context
-    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id)
+    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id).await
         .map_err(|e| e.to_string())?;
-    let scope_description = storage.get_scope_description_sync(&scope_tag_ids)
+    let scope_description = storage.get_scope_description_sync(&scope_tag_ids).await
         .map_err(|e| e.to_string())?;
 
     // Get conversation messages via get_conversation_sync and convert to provider format
-    let conversation = storage.get_conversation_sync(conversation_id)
+    let conversation = storage.get_conversation_sync(conversation_id).await
         .map_err(|e| e.to_string())?;
     let messages = match conversation {
         Some(conv) => chat_messages_to_provider_messages(conv.messages),
@@ -808,7 +809,7 @@ where
 
     // Save assistant message
     {
-        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content)
+        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content).await
             .map_err(|e| e.to_string())?;
 
         result.message.id = saved_msg.id.clone();
@@ -817,13 +818,13 @@ where
         for tool_call in &mut result.tool_calls {
             tool_call.message_id = saved_msg.id.clone();
         }
-        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls)
+        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls).await
             .map_err(|e| e.to_string())?;
 
         for citation in &mut result.citations {
             citation.message_id = saved_msg.id.clone();
         }
-        storage.save_citations_sync(&saved_msg.id, &result.citations)
+        storage.save_citations_sync(&saved_msg.id, &result.citations).await
             .map_err(|e| e.to_string())?;
     }
 
@@ -852,7 +853,7 @@ where
     let settings_map = match external_settings {
         Some(s) => s,
         None => {
-            storage.get_all_settings_sync()
+            storage.get_all_settings_sync().await
                 .map_err(|e| e.to_string())?
         }
     };
@@ -882,17 +883,17 @@ where
     };
 
     // Save user message
-    storage.save_message_sync(conversation_id, "user", content)
+    storage.save_message_sync(conversation_id, "user", content).await
         .map_err(|e| e.to_string())?;
 
     // Get conversation context
-    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id)
+    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id).await
         .map_err(|e| e.to_string())?;
-    let scope_description = storage.get_scope_description_sync(&scope_tag_ids)
+    let scope_description = storage.get_scope_description_sync(&scope_tag_ids).await
         .map_err(|e| e.to_string())?;
 
     // Get conversation messages via get_conversation_sync and convert to provider format
-    let conversation = storage.get_conversation_sync(conversation_id)
+    let conversation = storage.get_conversation_sync(conversation_id).await
         .map_err(|e| e.to_string())?;
     let messages = match conversation {
         Some(conv) => chat_messages_to_provider_messages(conv.messages),
@@ -925,7 +926,7 @@ where
 
     // Save assistant message
     {
-        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content)
+        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content).await
             .map_err(|e| e.to_string())?;
 
         result.message.id = saved_msg.id.clone();
@@ -934,13 +935,13 @@ where
         for tool_call in &mut result.tool_calls {
             tool_call.message_id = saved_msg.id.clone();
         }
-        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls)
+        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls).await
             .map_err(|e| e.to_string())?;
 
         for citation in &mut result.citations {
             citation.message_id = saved_msg.id.clone();
         }
-        storage.save_citations_sync(&saved_msg.id, &result.citations)
+        storage.save_citations_sync(&saved_msg.id, &result.citations).await
             .map_err(|e| e.to_string())?;
     }
 

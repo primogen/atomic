@@ -1,7 +1,7 @@
 //! Chat / Conversation routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use crate::event_bridge::chat_event_callback;
 use crate::state::AppState;
 use actix_web::{web, HttpResponse};
@@ -23,11 +23,9 @@ pub async fn create_conversation(
     body: web::Json<CreateConversationBody>,
 ) -> HttpResponse {
     let req = body.into_inner();
-    let core = db.0;
-    match web::block(move || core.create_conversation(&req.tag_ids, req.title.as_deref())).await {
-        Ok(Ok(conv)) => HttpResponse::Created().json(conv),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    match db.0.create_conversation(&req.tag_ids, req.title.as_deref()).await {
+        Ok(conv) => HttpResponse::Created().json(conv),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -49,9 +47,7 @@ pub async fn get_conversations(
 ) -> HttpResponse {
     let limit = query.limit.unwrap_or(50);
     let offset = query.offset.unwrap_or(0);
-    let filter_tag_id = query.filter_tag_id.clone();
-    let core = db.0;
-    blocking_ok(move || core.get_conversations(filter_tag_id.as_deref(), limit, offset)).await
+    ok_or_error(db.0.get_conversations(query.filter_tag_id.as_deref(), limit, offset).await)
 }
 
 #[utoipa::path(get, path = "/api/conversations/{id}", params(("id" = String, Path, description = "Conversation ID")), responses((status = 200, description = "Conversation with messages", body = atomic_core::ConversationWithMessages), (status = 404, description = "Not found", body = ApiErrorResponse)), tag = "chat")]
@@ -60,14 +56,12 @@ pub async fn get_conversation(
     path: web::Path<String>,
 ) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    match web::block(move || core.get_conversation(&id)).await {
-        Ok(Ok(Some(conv))) => HttpResponse::Ok().json(conv),
-        Ok(Ok(None)) => {
+    match db.0.get_conversation(&id).await {
+        Ok(Some(conv)) => HttpResponse::Ok().json(conv),
+        Ok(None) => {
             HttpResponse::NotFound().json(serde_json::json!({"error": "Conversation not found"}))
         }
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
@@ -87,8 +81,7 @@ pub async fn update_conversation(
 ) -> HttpResponse {
     let id = path.into_inner();
     let req = body.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.update_conversation(&id, req.title.as_deref(), req.is_archived)).await
+    ok_or_error(db.0.update_conversation(&id, req.title.as_deref(), req.is_archived).await)
 }
 
 #[utoipa::path(delete, path = "/api/conversations/{id}", params(("id" = String, Path, description = "Conversation ID")), responses((status = 200, description = "Conversation deleted")), tag = "chat")]
@@ -97,8 +90,7 @@ pub async fn delete_conversation(
     path: web::Path<String>,
 ) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.delete_conversation(&id)).await
+    ok_or_error(db.0.delete_conversation(&id).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -116,8 +108,7 @@ pub async fn set_conversation_scope(
 ) -> HttpResponse {
     let id = path.into_inner();
     let tag_ids = body.into_inner().tag_ids;
-    let core = db.0;
-    blocking_ok(move || core.set_conversation_scope(&id, &tag_ids)).await
+    ok_or_error(db.0.set_conversation_scope(&id, &tag_ids).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -134,8 +125,7 @@ pub async fn add_tag_to_scope(
 ) -> HttpResponse {
     let id = path.into_inner();
     let tag_id = body.into_inner().tag_id;
-    let core = db.0;
-    blocking_ok(move || core.add_tag_to_scope(&id, &tag_id)).await
+    ok_or_error(db.0.add_tag_to_scope(&id, &tag_id).await)
 }
 
 #[utoipa::path(delete, path = "/api/conversations/{id}/scope/tags/{tag_id}", params(("id" = String, Path, description = "Conversation ID"), ("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Tag removed from scope")), tag = "chat")]
@@ -144,8 +134,7 @@ pub async fn remove_tag_from_scope(
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (id, tag_id) = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.remove_tag_from_scope(&id, &tag_id)).await
+    ok_or_error(db.0.remove_tag_from_scope(&id, &tag_id).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]

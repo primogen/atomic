@@ -1,7 +1,7 @@
 //! Search routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ok_or_error, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use actix_web::{web, HttpResponse};
 use atomic_core::{SearchMode, SearchOptions, SemanticSearchResult, SimilarAtomResult};
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,5 @@ pub async fn find_similar(
     let atom_id = path.into_inner();
     let limit = query.limit.unwrap_or(10);
     let threshold = query.threshold.unwrap_or(0.7);
-    let core = db.0;
-    blocking_ok(move || core.find_similar(&atom_id, limit, threshold)).await
+    ok_or_error(db.0.find_similar(&atom_id, limit, threshold).await)
 }

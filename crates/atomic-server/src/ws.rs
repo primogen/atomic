@@ -13,9 +13,9 @@ pub async fn ws_handler(
     query: web::Query<WsQuery>,
 ) -> Result<HttpResponse, actix_web::Error> {
     // Authenticate via query param
-    let core = state.manager.active_core()
+    let core = state.manager.active_core().await
         .map_err(|_| actix_web::error::ErrorInternalServerError("Failed to get database"))?;
-    match core.verify_api_token(&query.token) {
+    match core.verify_api_token(&query.token).await {
         Ok(Some(_)) => {}
         _ => return Ok(HttpResponse::Unauthorized().finish()),
     }

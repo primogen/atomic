@@ -49,40 +49,38 @@ impl DatabaseManager {
     /// (CLI, server bootstrap) can pass through the same flag for both backends.
     /// Settings, tokens, OAuth, and the `databases` index all live in Postgres.
     #[cfg(feature = "postgres")]
-    pub fn new_postgres(
+    pub async fn new_postgres(
         _data_dir: impl AsRef<Path>,
         database_url: &str,
     ) -> Result<Self, AtomicCoreError> {
         // Bootstrap with a placeholder db_id; we'll look up the real default from Postgres
         // once the schema has been migrated.
-        let core = AtomicCore::open_postgres(database_url, "default", None)?;
+        let core = AtomicCore::open_postgres(database_url, "default", None).await?;
 
         // Seed the default database row if the `databases` table is empty.
-        let databases = core.storage.list_databases_sync()?;
+        let databases = core.storage.list_databases_sync().await?;
         if databases.is_empty() {
             let now = chrono::Utc::now().to_rfc3339();
             // Use raw SQL to set is_default = 1 (create_database_sync sets 0)
             if let Some(pg) = core.storage.as_postgres() {
-                crate::storage::pg_runtime_block_on(async {
-                    sqlx::query(
-                        "INSERT INTO databases (id, name, is_default, created_at) VALUES ($1, $2, 1, $3)
-                         ON CONFLICT (id) DO NOTHING",
-                    )
-                    .bind("default")
-                    .bind("Default")
-                    .bind(&now)
-                    .execute(&pg.pool)
-                    .await
-                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))
-                })?;
+                sqlx::query(
+                    "INSERT INTO databases (id, name, is_default, created_at) VALUES ($1, $2, 1, $3)
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind("default")
+                .bind("Default")
+                .bind(&now)
+                .execute(&pg.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
             }
         }
 
-        let default_id = core.storage.get_default_database_id_sync()?;
+        let default_id = core.storage.get_default_database_id_sync().await?;
 
         // If the bootstrap db_id doesn't match the resolved default, swap to a core scoped to the right db_id.
         let core = if default_id != "default" {
-            AtomicCore::open_postgres(database_url, &default_id, None)?
+            AtomicCore::open_postgres(database_url, &default_id, None).await?
         } else {
             core
         };
@@ -127,10 +125,11 @@ impl DatabaseManager {
     /// Resolve a database identifier to its canonical ID.
     /// If the value matches an existing database ID, returns it as-is.
     /// Otherwise, tries a case-insensitive name lookup.
-    fn resolve_database_id(&self, id_or_name: &str) -> Result<String, AtomicCoreError> {
+    async fn resolve_database_id(&self, id_or_name: &str) -> Result<String, AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
-            let databases = self.any_storage()?.list_databases_sync()?;
+            let storage = self.any_storage()?;
+            let databases = storage.list_databases_sync().await?;
             if databases.iter().any(|d| d.id == id_or_name) {
                 return Ok(id_or_name.to_string());
             }
@@ -156,7 +155,7 @@ impl DatabaseManager {
     /// Get a core for a specific database, loading it lazily if needed.
     /// Accepts either a database ID or name — if `id` doesn't match a known
     /// database ID, it falls back to a case-insensitive name lookup.
-    pub fn get_core(&self, id: &str) -> Result<AtomicCore, AtomicCoreError> {
+    pub async fn get_core(&self, id: &str) -> Result<AtomicCore, AtomicCoreError> {
         // Fast path: already loaded by id
         {
             let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
@@ -166,7 +165,7 @@ impl DatabaseManager {
         }
 
         // If the id doesn't look like a known database id, try resolving by name
-        let resolved_id = self.resolve_database_id(id)?;
+        let resolved_id = self.resolve_database_id(id).await?;
         if resolved_id != id {
             // Check cache again with the resolved id
             let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
@@ -178,7 +177,7 @@ impl DatabaseManager {
 
         // Postgres path: create lightweight core sharing the same pool with a new db_id
         #[cfg(feature = "postgres")]
-        if let Some(ref url) = self.database_url {
+        if let Some(ref _url) = self.database_url {
             // Get the pool from an existing core to share it
             let existing_core = {
                 let cores = self.cores.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
@@ -188,11 +187,12 @@ impl DatabaseManager {
                 if let Some(pg) = existing.storage.as_postgres() {
                     let new_pg = pg.with_db_id(id);
                     let core = AtomicCore::from_postgres_storage(new_pg);
-                    // Seed default tags for this db_id if needed
-                    let all_tags = core.storage.get_all_tags_impl()?;
+                    // Seed default tags for this db_id if needed.
+                    let storage = core.storage.clone();
+                    let all_tags = storage.get_all_tags_impl().await?;
                     if all_tags.is_empty() {
                         for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
-                            core.storage.create_tag_impl(category, None)?;
+                            storage.create_tag_impl(category, None).await?;
                         }
                     }
                     let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
@@ -220,9 +220,12 @@ impl DatabaseManager {
     }
 
     /// Get the active (current) database core.
-    pub fn active_core(&self) -> Result<AtomicCore, AtomicCoreError> {
-        let id = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        self.get_core(&id)
+    pub async fn active_core(&self) -> Result<AtomicCore, AtomicCoreError> {
+        let id = {
+            let guard = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            guard.clone()
+        };
+        self.get_core(&id).await
     }
 
     /// Get the active database ID.
@@ -232,11 +235,12 @@ impl DatabaseManager {
     }
 
     /// Switch the active database.
-    pub fn set_active(&self, id: &str) -> Result<(), AtomicCoreError> {
+    pub async fn set_active(&self, id: &str) -> Result<(), AtomicCoreError> {
         // Validate the database exists
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
-            let databases = self.any_storage()?.list_databases_sync()?;
+            let storage = self.any_storage()?;
+            let databases = storage.list_databases_sync().await?;
             if !databases.iter().any(|d| d.id == id) {
                 return Err(AtomicCoreError::NotFound(format!("Database '{}'", id)));
             }
@@ -256,7 +260,7 @@ impl DatabaseManager {
         }
 
         // Ensure it's loaded
-        self.get_core(id)?;
+        self.get_core(id).await?;
 
         let mut active = self.active_id.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         *active = id.to_string();
@@ -275,21 +279,21 @@ impl DatabaseManager {
     }
 
     /// Create a new database and register it.
-    pub fn create_database(&self, name: &str) -> Result<DatabaseInfo, AtomicCoreError> {
+    pub async fn create_database(&self, name: &str) -> Result<DatabaseInfo, AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
             let storage = self.any_storage()?;
-            let info = storage.create_database_sync(name)?;
+            let info = storage.create_database_sync(name).await?;
 
             // Create a core for the new database (shares Postgres pool, new db_id)
             if let Some(pg) = storage.as_postgres() {
                 let new_pg = pg.with_db_id(&info.id);
                 let core = AtomicCore::from_postgres_storage(new_pg);
                 // Seed default tags
-                let all_tags = core.storage.get_all_tags_impl()?;
+                let all_tags = core.storage.get_all_tags_impl().await?;
                 if all_tags.is_empty() {
                     for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
-                        core.storage.create_tag_impl(category, None)?;
+                        core.storage.create_tag_impl(category, None).await?;
                     }
                 }
                 let mut cores = self.cores.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
@@ -316,12 +320,12 @@ impl DatabaseManager {
     }
 
     /// Delete a database (cannot delete default). Removes from cache and disk.
-    pub fn delete_database(&self, id: &str) -> Result<(), AtomicCoreError> {
+    pub async fn delete_database(&self, id: &str) -> Result<(), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
             // Postgres storage validates it's not the default
             let storage = self.any_storage()?;
-            storage.delete_database_sync(id)?;
+            storage.delete_database_sync(id).await?;
 
             // Remove from cache
             {
@@ -335,7 +339,7 @@ impl DatabaseManager {
                 let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                 if *active == id {
                     drop(active);
-                    let default_id = storage.get_default_database_id_sync()?;
+                    let default_id = storage.get_default_database_id_sync().await?;
                     let mut active =
                         self.active_id.write().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
                     *active = default_id;
@@ -343,7 +347,7 @@ impl DatabaseManager {
             }
 
             // Purge all per-database data rows for this db_id
-            storage.purge_database_data_sync(id)?;
+            storage.purge_database_data_sync(id).await?;
             return Ok(());
         }
 
@@ -385,10 +389,10 @@ impl DatabaseManager {
     }
 
     /// List all databases with their info, plus which is active.
-    pub fn list_databases(&self) -> Result<(Vec<DatabaseInfo>, String), AtomicCoreError> {
+    pub async fn list_databases(&self) -> Result<(Vec<DatabaseInfo>, String), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
-            let databases = self.any_storage()?.list_databases_sync()?;
+            let databases = self.any_storage()?.list_databases_sync().await?;
             let active = self.active_id.read().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
             return Ok((databases, active.clone()));
         }
@@ -399,20 +403,20 @@ impl DatabaseManager {
     }
 
     /// Rename a database.
-    pub fn rename_database(&self, id: &str, name: &str) -> Result<(), AtomicCoreError> {
+    pub async fn rename_database(&self, id: &str, name: &str) -> Result<(), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
-            return self.any_storage()?.rename_database_sync(id, name);
+            return self.any_storage()?.rename_database_sync(id, name).await;
         }
 
         self.sqlite_registry().rename_database(id, name)
     }
 
     /// Set a database as the new default.
-    pub fn set_default_database(&self, id: &str) -> Result<(), AtomicCoreError> {
+    pub async fn set_default_database(&self, id: &str) -> Result<(), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
-            return self.any_storage()?.set_default_database_sync(id);
+            return self.any_storage()?.set_default_database_sync(id).await;
         }
 
         self.sqlite_registry().set_default_database(id)
@@ -421,7 +425,7 @@ impl DatabaseManager {
     /// Recreate vector indexes on all known databases *except* `skip_id` with the
     /// given dimension. `skip_id` is typically the active database whose index was
     /// already recreated (and whose async re-embedding job is in flight).
-    pub fn recreate_other_vector_indexes(&self, new_dim: usize, skip_id: &str) -> Result<(), AtomicCoreError> {
+    pub async fn recreate_other_vector_indexes(&self, new_dim: usize, skip_id: &str) -> Result<(), AtomicCoreError> {
         #[cfg(feature = "postgres")]
         if self.is_postgres() {
             // In Postgres mode all databases share the same atom_chunks table —
@@ -435,8 +439,8 @@ impl DatabaseManager {
             if db_info.id == skip_id {
                 continue;
             }
-            let core = self.get_core(&db_info.id)?;
-            core.storage.recreate_vector_index_sync(new_dim)?;
+            let core = self.get_core(&db_info.id).await?;
+            core.storage.recreate_vector_index_sync(new_dim).await?;
             tracing::info!(db_id = %db_info.id, db_name = %db_info.name, new_dim, "Recreated vector index");
         }
         Ok(())
@@ -457,71 +461,71 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_new_manager() {
+    #[tokio::test]
+    async fn test_new_manager() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let (databases, active_id) = manager.list_databases().unwrap();
+        let (databases, active_id) = manager.list_databases().await.unwrap();
         assert_eq!(databases.len(), 1);
         assert_eq!(active_id, "default");
     }
 
-    #[test]
-    fn test_get_active_core() {
+    #[tokio::test]
+    async fn test_get_active_core() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let core = manager.active_core().unwrap();
+        let core = manager.active_core().await.unwrap();
         // Should be able to query the core
-        let settings = core.get_settings().unwrap();
+        let settings = core.get_settings().await.unwrap();
         assert!(settings.contains_key("provider"));
     }
 
-    #[test]
-    fn test_create_and_switch_database() {
+    #[tokio::test]
+    async fn test_create_and_switch_database() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let info = manager.create_database("Work").unwrap();
+        let info = manager.create_database("Work").await.unwrap();
         assert_eq!(info.name, "Work");
 
-        manager.set_active(&info.id).unwrap();
+        manager.set_active(&info.id).await.unwrap();
         let active = manager.active_id().unwrap();
         assert_eq!(active, info.id);
     }
 
-    #[test]
-    fn test_delete_database() {
+    #[tokio::test]
+    async fn test_delete_database() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let info = manager.create_database("Temp").unwrap();
-        manager.delete_database(&info.id).unwrap();
+        let info = manager.create_database("Temp").await.unwrap();
+        manager.delete_database(&info.id).await.unwrap();
 
-        let (databases, _) = manager.list_databases().unwrap();
+        let (databases, _) = manager.list_databases().await.unwrap();
         assert_eq!(databases.len(), 1); // only default
     }
 
-    #[test]
-    fn test_delete_active_switches_to_default() {
+    #[tokio::test]
+    async fn test_delete_active_switches_to_default() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let info = manager.create_database("Temp").unwrap();
-        manager.set_active(&info.id).unwrap();
-        manager.delete_database(&info.id).unwrap();
+        let info = manager.create_database("Temp").await.unwrap();
+        manager.set_active(&info.id).await.unwrap();
+        manager.delete_database(&info.id).await.unwrap();
 
         let active = manager.active_id().unwrap();
         assert_eq!(active, "default");
     }
 
-    #[test]
-    fn test_cannot_delete_default() {
+    #[tokio::test]
+    async fn test_cannot_delete_default() {
         let dir = TempDir::new().unwrap();
         let manager = DatabaseManager::new(dir.path()).unwrap();
 
-        let result = manager.delete_database("default");
+        let result = manager.delete_database("default").await;
         assert!(result.is_err());
     }
 }

@@ -42,10 +42,10 @@ async fn main() -> std::io::Result<()> {
     match cli.command {
         // Token management subcommands (no server needed)
         Some(Command::Token { storage, database_url, action }) => {
-            let manager = create_manager(&data_dir, &storage, database_url.as_deref());
-            let core = manager.active_core()
+            let manager = create_manager(&data_dir, &storage, database_url.as_deref()).await;
+            let core = manager.active_core().await
                 .expect("Failed to get active database");
-            run_token_command(&core, action);
+            run_token_command(&core, action).await;
             Ok(())
         }
 
@@ -55,18 +55,18 @@ async fn main() -> std::io::Result<()> {
             let public_url = public_url.or_else(|| {
                 std::env::var("FLY_APP_NAME").ok().map(|name| format!("https://{name}.fly.dev"))
             });
-            let manager = create_manager(&data_dir, &storage, database_url.as_deref());
+            let manager = create_manager(&data_dir, &storage, database_url.as_deref()).await;
             run_server(manager, &data_dir.display().to_string(), port, &bind, public_url, log_buffer).await
         }
         None => {
-            let manager = create_manager(&data_dir, "sqlite", None);
+            let manager = create_manager(&data_dir, "sqlite", None).await;
             run_server(manager, &data_dir.display().to_string(), 8080, "127.0.0.1", None, log_buffer).await
         }
     }
 }
 
 /// Create a DatabaseManager based on the chosen storage backend.
-fn create_manager(
+async fn create_manager(
     data_dir: &std::path::Path,
     storage: &str,
     database_url: Option<&str>,
@@ -81,6 +81,7 @@ fn create_manager(
             });
             tracing::info!(backend = "postgres", host = url.split('@').last().unwrap_or(url), "storage backend selected");
             atomic_core::DatabaseManager::new_postgres(data_dir, url)
+                .await
                 .expect("Failed to connect to Postgres")
         }
         _ => {
@@ -91,10 +92,10 @@ fn create_manager(
     }
 }
 
-fn run_token_command(core: &atomic_core::AtomicCore, action: TokenAction) {
+async fn run_token_command(core: &atomic_core::AtomicCore, action: TokenAction) {
     match action {
         TokenAction::Create { name } => {
-            match core.create_api_token(&name) {
+            match core.create_api_token(&name).await {
                 Ok((info, raw_token)) => {
                     println!("Token created:");
                     println!("  ID:     {}", info.id);
@@ -110,7 +111,7 @@ fn run_token_command(core: &atomic_core::AtomicCore, action: TokenAction) {
             }
         }
         TokenAction::List => {
-            match core.list_api_tokens() {
+            match core.list_api_tokens().await {
                 Ok(tokens) => {
                     if tokens.is_empty() {
                         println!("No API tokens found.");
@@ -139,7 +140,7 @@ fn run_token_command(core: &atomic_core::AtomicCore, action: TokenAction) {
             }
         }
         TokenAction::Revoke { id } => {
-            match core.revoke_api_token(&id) {
+            match core.revoke_api_token(&id).await {
                 Ok(()) => println!("Token {} revoked.", id),
                 Err(e) => {
                     eprintln!("Failed to revoke token: {}", e);
@@ -161,17 +162,17 @@ async fn run_server(
     let manager = Arc::new(manager);
 
     // Get active core for startup tasks
-    let core = manager.active_core().expect("Failed to get active database");
+    let core = manager.active_core().await.expect("Failed to get active database");
 
     // Migrate legacy token if present
-    match core.migrate_legacy_token() {
+    match core.migrate_legacy_token().await {
         Ok(true) => tracing::info!("migrated legacy auth token to new token system"),
         Ok(false) => {}
         Err(e) => tracing::warn!(error = %e, "failed to migrate legacy token"),
     }
 
     // Check token status
-    match core.list_api_tokens() {
+    match core.list_api_tokens().await {
         Ok(tokens) => {
             let active = tokens.iter().filter(|t| !t.is_revoked).count();
             if active == 0 {
@@ -230,9 +231,9 @@ async fn run_server(
 
     // Startup recovery: reset stuck atoms and process any pending work for ALL databases
     {
-        let (databases, _active_id) = manager.list_databases().unwrap_or_default();
+        let (databases, _active_id) = manager.list_databases().await.unwrap_or_default();
         for db_info in &databases {
-            let db_core = match manager.get_core(&db_info.id) {
+            let db_core = match manager.get_core(&db_info.id).await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(db = %db_info.name, error = %e, "failed to load database");
@@ -241,25 +242,25 @@ async fn run_server(
             };
             let on_event = event_bridge::embedding_event_callback(app_state.event_tx.clone());
 
-            match db_core.reset_stuck_processing() {
+            match db_core.reset_stuck_processing().await {
                 Ok(count) if count > 0 => tracing::info!(db = %db_info.name, count = count, "reset atoms stuck in processing state"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(db = %db_info.name, error = %e, "failed to reset stuck processing"),
             }
 
-            match db_core.process_pending_embeddings(on_event.clone()) {
+            match db_core.process_pending_embeddings(on_event.clone()).await {
                 Ok(count) if count > 0 => tracing::info!(db = %db_info.name, count = count, "processing pending embeddings in background"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(db = %db_info.name, error = %e, "failed to start pending embeddings"),
             }
 
-            match db_core.process_pending_tagging(on_event) {
+            match db_core.process_pending_tagging(on_event).await {
                 Ok(count) if count > 0 => tracing::info!(db = %db_info.name, count = count, "processing pending tagging operations in background"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(db = %db_info.name, error = %e, "failed to start pending tagging"),
             }
 
-            match db_core.process_pending_edges() {
+            match db_core.process_pending_edges().await {
                 Ok(count) if count > 0 => tracing::info!(db = %db_info.name, count = count, "processing pending edge computation in background"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(db = %db_info.name, error = %e, "failed to start pending edge computation"),
@@ -275,7 +276,7 @@ async fn run_server(
     {
         let warm_manager = Arc::clone(&manager);
         tokio::spawn(async move {
-            let (databases, _) = match warm_manager.list_databases() {
+            let (databases, _) = match warm_manager.list_databases().await {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(error = %e, "canvas warmup: failed to list databases");
@@ -283,7 +284,7 @@ async fn run_server(
                 }
             };
             for db_info in &databases {
-                let db_core = match warm_manager.get_core(&db_info.id) {
+                let db_core = match warm_manager.get_core(&db_info.id).await {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(db = %db_info.name, error = %e, "canvas warmup: failed to load database");
@@ -292,19 +293,14 @@ async fn run_server(
                 };
                 let db_name = db_info.name.clone();
                 let started = std::time::Instant::now();
-                let result = tokio::task::spawn_blocking(move || {
-                    db_core.compute_and_get_canvas_data().map(|d| d.atoms.len())
-                })
-                .await;
-                match result {
-                    Ok(Ok(atom_count)) => tracing::info!(
+                match db_core.compute_and_get_canvas_data().await {
+                    Ok(data) => tracing::info!(
                         db = %db_name,
-                        atoms = atom_count,
+                        atoms = data.atoms.len(),
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "canvas cache warmed"
                     ),
-                    Ok(Err(e)) => tracing::warn!(db = %db_name, error = %e, "canvas cache warmup failed"),
-                    Err(e) => tracing::warn!(db = %db_name, error = %e, "canvas cache warmup panicked"),
+                    Err(e) => tracing::warn!(db = %db_name, error = %e, "canvas cache warmup failed"),
                 }
             }
         });
@@ -319,12 +315,12 @@ async fn run_server(
             interval.tick().await; // first tick fires immediately — skip it
             loop {
                 interval.tick().await;
-                let databases = match poll_manager.list_databases() {
+                let databases = match poll_manager.list_databases().await {
                     Ok((dbs, _)) => dbs,
                     Err(_) => continue,
                 };
                 for db_info in &databases {
-                    let db_core = match poll_manager.get_core(&db_info.id) {
+                    let db_core = match poll_manager.get_core(&db_info.id).await {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
@@ -364,12 +360,12 @@ async fn run_server(
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let databases = match task_manager.list_databases() {
+                let databases = match task_manager.list_databases().await {
                     Ok((dbs, _)) => dbs,
                     Err(_) => continue,
                 };
                 for db_info in &databases {
-                    let db_core = match task_manager.get_core(&db_info.id) {
+                    let db_core = match task_manager.get_core(&db_info.id).await {
                         Ok(c) => c,
                         Err(_) => continue,
                     };

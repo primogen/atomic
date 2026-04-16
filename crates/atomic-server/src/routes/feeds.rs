@@ -1,22 +1,20 @@
 //! Feed CRUD and polling routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use crate::event_bridge::{embedding_event_callback, ingestion_event_callback};
 use crate::state::AppState;
 use actix_web::{web, HttpResponse};
 
 #[utoipa::path(get, path = "/api/feeds", responses((status = 200, description = "All feeds", body = Vec<atomic_core::Feed>)), tag = "feeds")]
 pub async fn list_feeds(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.list_feeds()).await
+    ok_or_error(db.0.list_feeds().await)
 }
 
 #[utoipa::path(get, path = "/api/feeds/{id}", params(("id" = String, Path, description = "Feed ID")), responses((status = 200, description = "Feed details", body = atomic_core::Feed), (status = 404, description = "Feed not found", body = ApiErrorResponse)), tag = "feeds")]
 pub async fn get_feed(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.get_feed(&id)).await
+    ok_or_error(db.0.get_feed(&id).await)
 }
 
 #[utoipa::path(post, path = "/api/feeds", request_body = atomic_core::CreateFeedRequest, responses((status = 201, description = "Feed created", body = atomic_core::Feed)), tag = "feeds")]
@@ -41,19 +39,16 @@ pub async fn update_feed(
     body: web::Json<atomic_core::UpdateFeedRequest>,
 ) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.update_feed(&id, body.into_inner())).await
+    ok_or_error(db.0.update_feed(&id, body.into_inner()).await)
 }
 
 #[utoipa::path(delete, path = "/api/feeds/{id}", params(("id" = String, Path, description = "Feed ID")), responses((status = 200, description = "Feed deleted")), tag = "feeds")]
 pub async fn delete_feed(db: Db, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || {
-        core.delete_feed(&id)?;
-        Ok(serde_json::json!({"deleted": true}))
-    })
-    .await
+    match db.0.delete_feed(&id).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"deleted": true})),
+        Err(e) => crate::error::error_response(e),
+    }
 }
 
 #[utoipa::path(post, path = "/api/feeds/{id}/poll", params(("id" = String, Path, description = "Feed ID")), responses((status = 200, description = "Poll results")), tag = "feeds")]

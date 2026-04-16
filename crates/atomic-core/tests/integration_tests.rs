@@ -16,7 +16,7 @@ fn create_core() -> (AtomicCore, TempDir) {
     (core, dir)
 }
 
-fn create_atom(core: &AtomicCore, content: &str) -> AtomWithTags {
+async fn create_atom(core: &AtomicCore, content: &str) -> AtomWithTags {
     core.create_atom(
         CreateAtomRequest {
             content: content.to_string(),
@@ -24,23 +24,24 @@ fn create_atom(core: &AtomicCore, content: &str) -> AtomWithTags {
         },
         |_| {},
     )
+    .await
     .unwrap()
     .unwrap()
 }
 
 // ==================== Atom lifecycle ====================
 
-#[test]
-fn test_atom_create_read_update_delete() {
+#[tokio::test]
+async fn test_atom_create_read_update_delete() {
     let (core, _dir) = create_core();
 
     // Create
-    let atom = create_atom(&core, "# Hello\n\nOriginal content");
+    let atom = create_atom(&core, "# Hello\n\nOriginal content").await;
     assert_eq!(atom.atom.embedding_status, "pending");
     assert!(!atom.atom.id.is_empty());
 
     // Read
-    let fetched = core.get_atom(&atom.atom.id).unwrap().unwrap();
+    let fetched = core.get_atom(&atom.atom.id).await.unwrap().unwrap();
     assert_eq!(fetched.atom.content, "# Hello\n\nOriginal content");
     assert_eq!(fetched.atom.title, "Hello");
 
@@ -54,21 +55,21 @@ fn test_atom_create_read_update_delete() {
             tag_ids: None,
         },
         |_| {},
-    ).unwrap();
+    ).await.unwrap();
     assert_eq!(updated.atom.content, "# Updated\n\nNew content");
     assert_eq!(updated.atom.title, "Updated");
 
     // Verify update persisted
-    let re_fetched = core.get_atom(&atom.atom.id).unwrap().unwrap();
+    let re_fetched = core.get_atom(&atom.atom.id).await.unwrap().unwrap();
     assert_eq!(re_fetched.atom.content, "# Updated\n\nNew content");
 
     // Delete
-    core.delete_atom(&atom.atom.id).unwrap();
-    assert!(core.get_atom(&atom.atom.id).unwrap().is_none());
+    core.delete_atom(&atom.atom.id).await.unwrap();
+    assert!(core.get_atom(&atom.atom.id).await.unwrap().is_none());
 }
 
-#[test]
-fn test_bulk_create_with_dedup() {
+#[tokio::test]
+async fn test_bulk_create_with_dedup() {
     let (core, _dir) = create_core();
 
     let requests = vec![
@@ -86,25 +87,25 @@ fn test_bulk_create_with_dedup() {
         },
     ];
 
-    let result = core.create_atoms_bulk(requests.clone(), |_| {}).unwrap();
+    let result = core.create_atoms_bulk(requests.clone(), |_| {}).await.unwrap();
     assert_eq!(result.count, 2);
     assert_eq!(result.skipped, 0);
 
     // Creating again with same source_urls should skip
-    let result2 = core.create_atoms_bulk(requests, |_| {}).unwrap();
+    let result2 = core.create_atoms_bulk(requests, |_| {}).await.unwrap();
     assert_eq!(result2.count, 0);
     assert_eq!(result2.skipped, 2);
 }
 
 // ==================== Tags ====================
 
-#[test]
-fn test_tag_hierarchy_and_atom_association() {
+#[tokio::test]
+async fn test_tag_hierarchy_and_atom_association() {
     let (core, _dir) = create_core();
 
     // Create parent and child tags
-    let parent = core.create_tag("Science", None).unwrap();
-    let child = core.create_tag("Physics", Some(&parent.id)).unwrap();
+    let parent = core.create_tag("Science", None).await.unwrap();
+    let child = core.create_tag("Physics", Some(&parent.id)).await.unwrap();
 
     // Create atom with child tag
     let atom = core.create_atom(
@@ -114,39 +115,39 @@ fn test_tag_hierarchy_and_atom_association() {
             ..Default::default()
         },
         |_| {},
-    ).unwrap().unwrap();
+    ).await.unwrap().unwrap();
     assert_eq!(atom.tags.len(), 1);
     assert_eq!(atom.tags[0].name, "Physics");
 
     // get_atoms_by_tag on parent should include child's atoms
-    let by_parent = core.get_atoms_by_tag(&parent.id).unwrap();
+    let by_parent = core.get_atoms_by_tag(&parent.id).await.unwrap();
     assert_eq!(by_parent.len(), 1);
     assert_eq!(by_parent[0].atom.id, atom.atom.id);
 
     // get_atoms_by_tag on child directly
-    let by_child = core.get_atoms_by_tag(&child.id).unwrap();
+    let by_child = core.get_atoms_by_tag(&child.id).await.unwrap();
     assert_eq!(by_child.len(), 1);
 
     // Update tag name
-    let updated = core.update_tag(&child.id, "Quantum Physics", Some(&parent.id)).unwrap();
+    let updated = core.update_tag(&child.id, "Quantum Physics", Some(&parent.id)).await.unwrap();
     assert_eq!(updated.name, "Quantum Physics");
 
     // Delete child tag shouldn't delete the atom
-    core.delete_tag(&child.id, false).unwrap();
-    let atom_still_exists = core.get_atom(&atom.atom.id).unwrap();
+    core.delete_tag(&child.id, false).await.unwrap();
+    let atom_still_exists = core.get_atom(&atom.atom.id).await.unwrap();
     assert!(atom_still_exists.is_some());
     assert!(atom_still_exists.unwrap().tags.is_empty());
 }
 
 // ==================== Pagination ====================
 
-#[test]
-fn test_list_atoms_offset_and_cursor_pagination() {
+#[tokio::test]
+async fn test_list_atoms_offset_and_cursor_pagination() {
     let (core, _dir) = create_core();
 
     // Create 10 atoms
     for i in 0..10 {
-        create_atom(&core, &format!("Atom number {}", i));
+        create_atom(&core, &format!("Atom number {}", i)).await;
     }
 
     // Offset pagination: page 1
@@ -160,7 +161,7 @@ fn test_list_atoms_offset_and_cursor_pagination() {
         source_value: None,
         sort_by: SortField::Updated,
         sort_order: SortOrder::Desc,
-    }).unwrap();
+    }).await.unwrap();
     assert_eq!(page1.atoms.len(), 3);
     assert_eq!(page1.total_count, 10);
     assert!(page1.next_cursor.is_some());
@@ -177,7 +178,7 @@ fn test_list_atoms_offset_and_cursor_pagination() {
         source_value: None,
         sort_by: SortField::Updated,
         sort_order: SortOrder::Desc,
-    }).unwrap();
+    }).await.unwrap();
     assert_eq!(page2.atoms.len(), 3);
 
     // Pages should not overlap
@@ -187,13 +188,13 @@ fn test_list_atoms_offset_and_cursor_pagination() {
     }
 }
 
-#[test]
-fn test_list_atoms_sort_fields() {
+#[tokio::test]
+async fn test_list_atoms_sort_fields() {
     let (core, _dir) = create_core();
 
-    create_atom(&core, "# Banana\n\nContent");
-    create_atom(&core, "# Apple\n\nContent");
-    create_atom(&core, "# Cherry\n\nContent");
+    create_atom(&core, "# Banana\n\nContent").await;
+    create_atom(&core, "# Apple\n\nContent").await;
+    create_atom(&core, "# Cherry\n\nContent").await;
 
     // Sort by title ascending
     let result = core.list_atoms(&ListAtomsParams {
@@ -206,7 +207,7 @@ fn test_list_atoms_sort_fields() {
         source_value: None,
         sort_by: SortField::Title,
         sort_order: SortOrder::Asc,
-    }).unwrap();
+    }).await.unwrap();
 
     let titles: Vec<&str> = result.atoms.iter().map(|a| a.title.as_str()).collect();
     assert_eq!(titles, vec!["Apple", "Banana", "Cherry"]);
@@ -214,53 +215,53 @@ fn test_list_atoms_sort_fields() {
 
 // ==================== Chat ====================
 
-#[test]
-fn test_conversation_lifecycle() {
+#[tokio::test]
+async fn test_conversation_lifecycle() {
     let (core, _dir) = create_core();
 
-    let tag = core.create_tag("Chat Topic", None).unwrap();
+    let tag = core.create_tag("Chat Topic", None).await.unwrap();
 
     // Create conversation with scope
-    let conv = core.create_conversation(&[tag.id.clone()], Some("Test Chat")).unwrap();
+    let conv = core.create_conversation(&[tag.id.clone()], Some("Test Chat")).await.unwrap();
     assert_eq!(conv.conversation.title.as_deref(), Some("Test Chat"));
     assert_eq!(conv.tags.len(), 1);
 
     // List conversations
-    let convs = core.get_conversations(None, 10, 0).unwrap();
+    let convs = core.get_conversations(None, 10, 0).await.unwrap();
     assert_eq!(convs.len(), 1);
 
     // Update title
-    let updated = core.update_conversation(&conv.conversation.id, Some("Renamed"), None).unwrap();
+    let updated = core.update_conversation(&conv.conversation.id, Some("Renamed"), None).await.unwrap();
     assert_eq!(updated.title.as_deref(), Some("Renamed"));
 
     // Delete
-    core.delete_conversation(&conv.conversation.id).unwrap();
-    assert!(core.get_conversation(&conv.conversation.id).unwrap().is_none());
+    core.delete_conversation(&conv.conversation.id).await.unwrap();
+    assert!(core.get_conversation(&conv.conversation.id).await.unwrap().is_none());
 }
 
 // ==================== Wiki ====================
 
-#[test]
-fn test_wiki_article_lifecycle() {
+#[tokio::test]
+async fn test_wiki_article_lifecycle() {
     let (core, _dir) = create_core();
 
-    let tag = core.create_tag("Wiki Topic", None).unwrap();
+    let tag = core.create_tag("Wiki Topic", None).await.unwrap();
 
     // Check status before article exists
-    let status = core.get_wiki_status(&tag.id).unwrap();
+    let status = core.get_wiki_status(&tag.id).await.unwrap();
     assert!(!status.has_article);
 
     // No article yet
-    assert!(core.get_wiki(&tag.id).unwrap().is_none());
+    assert!(core.get_wiki(&tag.id).await.unwrap().is_none());
 
     // Delete non-existent (should not error)
-    core.delete_wiki(&tag.id).unwrap();
+    core.delete_wiki(&tag.id).await.unwrap();
 }
 
 // ==================== Source filtering ====================
 
-#[test]
-fn test_source_url_tracking() {
+#[tokio::test]
+async fn test_source_url_tracking() {
     let (core, _dir) = create_core();
 
     core.create_atom(
@@ -272,11 +273,11 @@ fn test_source_url_tracking() {
             ..Default::default()
         },
         |_| {},
-    ).unwrap();
+    ).await.unwrap();
 
-    create_atom(&core, "Manual note");
+    create_atom(&core, "Manual note").await;
 
-    let sources = core.get_source_list().unwrap();
+    let sources = core.get_source_list().await.unwrap();
     assert!(sources.iter().any(|s| s.source == "example.com"));
 
     // Filter to external only
@@ -290,7 +291,7 @@ fn test_source_url_tracking() {
         source_value: None,
         sort_by: SortField::Updated,
         sort_order: SortOrder::Desc,
-    }).unwrap();
+    }).await.unwrap();
     assert_eq!(external.total_count, 1);
 
     // Filter to manual only
@@ -304,60 +305,60 @@ fn test_source_url_tracking() {
         source_value: None,
         sort_by: SortField::Updated,
         sort_order: SortOrder::Desc,
-    }).unwrap();
+    }).await.unwrap();
     assert_eq!(manual.total_count, 1);
 }
 
 // ==================== Settings + Tokens ====================
 
-#[test]
-fn test_settings_roundtrip() {
+#[tokio::test]
+async fn test_settings_roundtrip() {
     let (core, _dir) = create_core();
 
     // Default settings should exist
-    let settings = core.get_settings().unwrap();
+    let settings = core.get_settings().await.unwrap();
     assert!(settings.contains_key("provider"));
 
     // Set and get
-    core.set_setting("test_key", "test_value").unwrap();
-    let settings = core.get_settings().unwrap();
+    core.set_setting("test_key", "test_value").await.unwrap();
+    let settings = core.get_settings().await.unwrap();
     assert_eq!(settings.get("test_key").unwrap(), "test_value");
 }
 
-#[test]
-fn test_token_lifecycle() {
+#[tokio::test]
+async fn test_token_lifecycle() {
     let (core, _dir) = create_core();
 
-    let (info, raw) = core.create_api_token("integration-test").unwrap();
+    let (info, raw) = core.create_api_token("integration-test").await.unwrap();
     assert!(raw.starts_with("at_"));
 
     // Verify
-    let verified = core.verify_api_token(&raw).unwrap();
+    let verified = core.verify_api_token(&raw).await.unwrap();
     assert!(verified.is_some());
     assert_eq!(verified.unwrap().id, info.id);
 
     // List
-    let tokens = core.list_api_tokens().unwrap();
+    let tokens = core.list_api_tokens().await.unwrap();
     assert!(tokens.iter().any(|t| t.id == info.id));
 
     // Revoke
-    core.revoke_api_token(&info.id).unwrap();
-    assert!(core.verify_api_token(&raw).unwrap().is_none());
+    core.revoke_api_token(&info.id).await.unwrap();
+    assert!(core.verify_api_token(&raw).await.unwrap().is_none());
 }
 
 // ==================== Edge cases ====================
 
-#[test]
-fn test_get_nonexistent_atom_returns_none() {
+#[tokio::test]
+async fn test_get_nonexistent_atom_returns_none() {
     let (core, _dir) = create_core();
-    assert!(core.get_atom("does-not-exist").unwrap().is_none());
+    assert!(core.get_atom("does-not-exist").await.unwrap().is_none());
 }
 
-#[test]
-fn test_empty_database_queries() {
+#[tokio::test]
+async fn test_empty_database_queries() {
     let (core, _dir) = create_core();
 
-    assert!(core.get_all_atoms().unwrap().is_empty());
+    assert!(core.get_all_atoms().await.unwrap().is_empty());
     let page = core.list_atoms(&ListAtomsParams {
         tag_id: None,
         limit: 10,
@@ -368,25 +369,25 @@ fn test_empty_database_queries() {
         source_value: None,
         sort_by: SortField::Updated,
         sort_order: SortOrder::Desc,
-    }).unwrap();
+    }).await.unwrap();
     assert_eq!(page.total_count, 0);
-    assert!(core.get_source_list().unwrap().is_empty());
-    assert!(core.get_conversations(None, 10, 0).unwrap().is_empty());
+    assert!(core.get_source_list().await.unwrap().is_empty());
+    assert!(core.get_conversations(None, 10, 0).await.unwrap().is_empty());
 }
 
-#[test]
-fn test_atom_positions_roundtrip() {
+#[tokio::test]
+async fn test_atom_positions_roundtrip() {
     let (core, _dir) = create_core();
 
-    let atom = create_atom(&core, "Canvas atom");
+    let atom = create_atom(&core, "Canvas atom").await;
 
     core.save_atom_positions(&[AtomPosition {
         atom_id: atom.atom.id.clone(),
         x: 100.5,
         y: 200.3,
-    }]).unwrap();
+    }]).await.unwrap();
 
-    let positions = core.get_atom_positions().unwrap();
+    let positions = core.get_atom_positions().await.unwrap();
     assert_eq!(positions.len(), 1);
     assert_eq!(positions[0].atom_id, atom.atom.id);
     assert!((positions[0].x - 100.5).abs() < 0.01);

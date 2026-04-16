@@ -53,21 +53,16 @@ pub struct PostgresStorage {
 impl PostgresStorage {
     /// Connect to a Postgres database with a specific logical database ID.
     ///
-    /// The pool is created on PG_RUNTIME (a dedicated multi-thread runtime)
-    /// so that all sync dispatch calls can use it without crossing runtimes.
-    /// This method is synchronous — it blocks the calling thread.
-    pub fn connect(database_url: &str, db_id: &str) -> Result<Self, AtomicCoreError> {
+    /// Creates a connection pool on the caller's tokio runtime.
+    pub async fn connect(database_url: &str, db_id: &str) -> Result<Self, AtomicCoreError> {
         use sqlx::postgres::PgPoolOptions;
 
-        let url = database_url.to_string();
-        let pool = crate::storage::pg_runtime_block_on(async move {
-            PgPoolOptions::new()
-                .max_connections(50)
-                .acquire_timeout(std::time::Duration::from_secs(10))
-                .connect(&url)
-                .await
-        })
-        .map_err(|e| AtomicCoreError::DatabaseOperation(format!("Postgres connection failed: {}", e)))?;
+        let pool = PgPoolOptions::new()
+            .max_connections(50)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect(database_url)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(format!("Postgres connection failed: {}", e)))?;
         Ok(Self { pool, db_id: db_id.to_string() })
     }
 
@@ -85,15 +80,9 @@ impl PostgresStorage {
         &self.pool
     }
 
-    /// Synchronous initialization — runs migrations on PG_RUNTIME.
-    pub fn initialize_sync(&self) -> Result<(), AtomicCoreError> {
-        let pool = self.pool.clone();
-        let db_id = self.db_id.clone();
-        // Create a temporary self for the async method
-        let this = Self { pool, db_id };
-        crate::storage::pg_runtime_block_on(async move {
-            this.run_migrations().await
-        })
+    /// Initialize the schema — runs migrations on the caller's runtime.
+    pub async fn initialize(&self) -> Result<(), AtomicCoreError> {
+        self.run_migrations().await
     }
 
     /// Run migrations incrementally based on schema_version.

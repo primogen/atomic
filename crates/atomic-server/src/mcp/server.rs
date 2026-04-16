@@ -36,16 +36,18 @@ impl AtomicMcpServer {
     }
 
     /// Resolve the correct AtomicCore from the request context's DbSelection extension.
-    fn resolve_core(&self, context: &RequestContext<RoleServer>) -> Result<AtomicCore, ErrorData> {
+    async fn resolve_core(&self, context: &RequestContext<RoleServer>) -> Result<AtomicCore, ErrorData> {
         let db_id = context.extensions.get::<DbSelection>().and_then(|s| s.0.clone());
         match db_id {
             Some(id) => self
                 .manager
                 .get_core(&id)
+                .await
                 .map_err(|e| ErrorData::internal_error(format!("Database not found: {}", e), None)),
             None => self
                 .manager
                 .active_core()
+                .await
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None)),
         }
     }
@@ -62,7 +64,7 @@ impl AtomicMcpServer {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<SemanticSearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let core = self.resolve_core(&context)?;
+        let core = self.resolve_core(&context).await?;
         let limit = params.limit.unwrap_or(10).min(50);
         let options = atomic_core::SearchOptions::new(
             params.query,
@@ -102,11 +104,11 @@ impl AtomicMcpServer {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<ReadAtomParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let core = self.resolve_core(&context)?;
+        let core = self.resolve_core(&context).await?;
         let limit = params.limit.unwrap_or(500).min(500) as usize;
         let offset = params.offset.unwrap_or(0).max(0) as usize;
 
-        let atom_with_tags = match core.get_atom(&params.atom_id) {
+        let atom_with_tags = match core.get_atom(&params.atom_id).await {
             Ok(Some(a)) => a,
             Ok(None) => {
                 return Ok(CallToolResult::success(vec![
@@ -162,7 +164,7 @@ impl AtomicMcpServer {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<CreateAtomParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let core = self.resolve_core(&context)?;
+        let core = self.resolve_core(&context).await?;
         let request = atomic_core::CreateAtomRequest {
             content: params.content.clone(),
             source_url: params.source_url,
@@ -175,6 +177,7 @@ impl AtomicMcpServer {
 
         let result = core
             .create_atom(request, on_event)
+            .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
             .ok_or_else(|| ErrorData::internal_error("Atom creation returned None".to_string(), None))?;
 
@@ -205,10 +208,10 @@ impl AtomicMcpServer {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<UpdateAtomParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let core = self.resolve_core(&context)?;
+        let core = self.resolve_core(&context).await?;
 
         // Verify the atom exists first
-        match core.get_atom(&params.atom_id) {
+        match core.get_atom(&params.atom_id).await {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -230,6 +233,7 @@ impl AtomicMcpServer {
 
         let result = core
             .update_atom(&params.atom_id, request, on_event)
+            .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
         let response = AtomResponse {

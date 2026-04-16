@@ -1,7 +1,7 @@
 //! Settings routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use crate::state::AppState;
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,7 @@ use utoipa::ToSchema;
 
 #[utoipa::path(get, path = "/api/settings", responses((status = 200, description = "All settings as key-value map")), tag = "settings")]
 pub async fn get_settings(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.get_settings()).await
+    ok_or_error(db.0.get_settings().await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -32,65 +31,56 @@ pub async fn set_setting(
     // Handle dimension-affecting settings via set_setting_with_reembed (avoids deadlock)
     let dimension_keys = ["provider", "embedding_model", "ollama_embedding_model", "openai_compat_embedding_model", "openai_compat_embedding_dimension"];
     if dimension_keys.contains(&key.as_str()) {
-        let core = db.0;
         let manager = state.manager.clone();
         let active_id = state.manager.active_id().unwrap_or_default();
         let on_event = crate::event_bridge::embedding_event_callback(state.event_tx.clone());
-        match web::block(move || {
-            let result = core.set_setting_with_reembed(&key, &value, on_event.clone());
-            // If dimension changed, recreate vector indexes on all other databases
-            // AND enqueue their atoms for re-embedding.
-            if let Ok(ref r) = &result {
-                if r.dimension_changed {
-                    if let Err(e) = manager.recreate_other_vector_indexes(r.new_dim, &active_id) {
-                        tracing::error!("Failed to recreate vector indexes on other databases: {}", e);
-                    } else {
-                        // Enqueue re-embedding for every non-active database.
-                        match manager.list_databases() {
-                            Ok((dbs, _)) => {
-                                for db_info in dbs {
-                                    if db_info.id == active_id {
-                                        continue;
-                                    }
-                                    match manager.get_core(&db_info.id) {
-                                        Ok(other_core) => {
-                                            match other_core.spawn_reembed_pending(on_event.clone()) {
-                                                Ok(n) => tracing::info!(
-                                                    db_id = %db_info.id,
-                                                    db_name = %db_info.name,
-                                                    queued = n,
-                                                    "Queued re-embedding for non-active database"
-                                                ),
-                                                Err(e) => tracing::error!(
-                                                    db_id = %db_info.id,
-                                                    "Failed to queue re-embedding: {}",
-                                                    e
-                                                ),
-                                            }
+        let result = db.0.set_setting_with_reembed(&key, &value, on_event.clone()).await;
+        // If dimension changed, recreate vector indexes on all other databases
+        // AND enqueue their atoms for re-embedding.
+        if let Ok(ref r) = &result {
+            if r.dimension_changed {
+                if let Err(e) = manager.recreate_other_vector_indexes(r.new_dim, &active_id).await {
+                    tracing::error!("Failed to recreate vector indexes on other databases: {}", e);
+                } else {
+                    // Enqueue re-embedding for every non-active database.
+                    match manager.list_databases().await {
+                        Ok((dbs, _)) => {
+                            for db_info in dbs {
+                                if db_info.id == active_id {
+                                    continue;
+                                }
+                                match manager.get_core(&db_info.id).await {
+                                    Ok(other_core) => {
+                                        match other_core.spawn_reembed_pending(on_event.clone()).await {
+                                            Ok(n) => tracing::info!(
+                                                db_id = %db_info.id,
+                                                db_name = %db_info.name,
+                                                queued = n,
+                                                "Queued re-embedding for non-active database"
+                                            ),
+                                            Err(e) => tracing::error!(
+                                                db_id = %db_info.id,
+                                                "Failed to queue re-embedding: {}",
+                                                e
+                                            ),
                                         }
-                                        Err(e) => tracing::error!(
-                                            db_id = %db_info.id,
-                                            "Failed to load core for re-embed: {}",
-                                            e
-                                        ),
                                     }
+                                    Err(e) => tracing::error!(
+                                        db_id = %db_info.id,
+                                        "Failed to load core for re-embed: {}",
+                                        e
+                                    ),
                                 }
                             }
-                            Err(e) => tracing::error!("Failed to list databases for re-embed: {}", e),
                         }
+                        Err(e) => tracing::error!("Failed to list databases for re-embed: {}", e),
                     }
                 }
             }
-            result
-        }).await {
-            Ok(Ok(result)) => HttpResponse::Ok().json(result),
-            Ok(Err(e)) => crate::error::error_response(e),
-            Err(e) => HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()})),
         }
+        ok_or_error(result)
     } else {
-        let core = db.0;
-        blocking_ok(move || core.set_setting(&key, &value)).await
+        ok_or_error(db.0.set_setting(&key, &value).await)
     }
 }
 
@@ -195,7 +185,7 @@ pub async fn get_available_llm_models(db: Db) -> HttpResponse {
     use atomic_core::providers::models::fetch_and_return_capabilities;
 
     let core = &db.0;
-    let (cached, is_stale) = match core.get_cached_capabilities() {
+    let (cached, is_stale) = match core.get_cached_capabilities().await {
         Ok(Some(cache)) => {
             let stale = cache.is_stale();
             (Some(cache), stale)
@@ -213,7 +203,7 @@ pub async fn get_available_llm_models(db: Db) -> HttpResponse {
     let client = reqwest::Client::new();
     match fetch_and_return_capabilities(&client).await {
         Ok(fresh_cache) => {
-            let _ = core.save_capabilities_cache(&fresh_cache);
+            let _ = core.save_capabilities_cache(&fresh_cache).await;
             HttpResponse::Ok().json(fresh_cache.get_models_with_structured_outputs())
         }
         Err(e) => {

@@ -995,11 +995,7 @@ impl PostgresStorage {
     /// Embedding/tagging snapshot for the active database. Mirrors the SQLite
     /// implementation in `sqlite/chunks.rs:get_pipeline_status_sync` so the
     /// `/api/pipeline-status` endpoint returns the same shape on either backend.
-    pub(crate) fn get_pipeline_status_sync(&self) -> StorageResult<PipelineStatus> {
-        crate::storage::pg_runtime_block_on(self.get_pipeline_status_impl())
-    }
-
-    async fn get_pipeline_status_impl(&self) -> StorageResult<PipelineStatus> {
+    pub(crate) async fn get_pipeline_status_impl(&self) -> StorageResult<PipelineStatus> {
         let count_by_status = |status: &'static str| async move {
             let count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM atoms WHERE embedding_status = $1 AND db_id = $2",

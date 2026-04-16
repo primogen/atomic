@@ -40,7 +40,7 @@ pub(crate) async fn generate(
     let max_tokens = ctx.max_source_tokens();
     tracing::info!(budget_tokens = max_tokens, "[wiki/centroid] Preparing sources (centroid similarity)");
 
-    let (chunks, atom_count) = ctx.storage.get_wiki_source_chunks_sync(&ctx.tag_id, max_tokens)
+    let (chunks, atom_count) = ctx.storage.get_wiki_source_chunks_sync(&ctx.tag_id, max_tokens).await
         .map_err(|e| e.to_string())?;
 
     let input = WikiGenerationInput {
@@ -76,7 +76,7 @@ pub(crate) async fn update(
         &ctx.tag_id,
         &existing.article.updated_at,
         max_tokens,
-    ).map_err(|e| e.to_string())?;
+    ).await.map_err(|e| e.to_string())?;
 
     let (new_chunks, atom_count) = match update_data {
         Some(data) => data,

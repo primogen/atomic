@@ -1,7 +1,7 @@
 //! Clustering routes
 
 use crate::db_extractor::Db;
-use crate::error::blocking_ok;
+use crate::error::ok_or_error;
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -21,22 +21,20 @@ pub async fn compute_clusters(
 ) -> HttpResponse {
     let min_similarity = body.min_similarity.unwrap_or(0.6);
     let min_cluster_size = body.min_cluster_size.unwrap_or(2);
-    let core = db.0;
-    match web::block(move || {
-        let clusters = core.compute_clusters(min_similarity, min_cluster_size)?;
-        core.save_clusters(&clusters)?;
-        Ok::<_, atomic_core::AtomicCoreError>(clusters)
-    }).await {
-        Ok(Ok(clusters)) => HttpResponse::Ok().json(clusters),
-        Ok(Err(e)) => crate::error::error_response(e),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()})),
+    let core = &db.0;
+    let clusters = match core.compute_clusters(min_similarity, min_cluster_size).await {
+        Ok(c) => c,
+        Err(e) => return crate::error::error_response(e),
+    };
+    match core.save_clusters(&clusters).await {
+        Ok(()) => HttpResponse::Ok().json(clusters),
+        Err(e) => crate::error::error_response(e),
     }
 }
 
 #[utoipa::path(get, path = "/api/clustering", responses((status = 200, description = "Saved clusters", body = Vec<atomic_core::AtomCluster>)), tag = "clustering")]
 pub async fn get_clusters(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.get_clusters()).await
+    ok_or_error(db.0.get_clusters().await)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -52,6 +50,5 @@ pub async fn get_connection_counts(
     query: web::Query<ConnectionCountsQuery>,
 ) -> HttpResponse {
     let min_similarity = query.min_similarity.unwrap_or(0.5);
-    let core = db.0;
-    blocking_ok(move || core.get_connection_counts(min_similarity)).await
+    ok_or_error(db.0.get_connection_counts(min_similarity).await)
 }

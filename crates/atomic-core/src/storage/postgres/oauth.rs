@@ -7,7 +7,6 @@
 use super::PostgresStorage;
 use crate::error::AtomicCoreError;
 use crate::registry::OAuthCodeInfo;
-use crate::storage::pg_runtime_block_on;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -139,71 +138,4 @@ impl PostgresStorage {
         Ok(())
     }
 
-    // ==================== Sync wrappers ====================
-
-    pub(crate) fn create_oauth_client_sync(
-        &self,
-        client_name: &str,
-        client_secret_hash: &str,
-        redirect_uris_json: &str,
-    ) -> Result<String, AtomicCoreError> {
-        pg_runtime_block_on(self.create_oauth_client(client_name, client_secret_hash, redirect_uris_json))
-    }
-
-    pub(crate) fn get_oauth_client_name_sync(
-        &self,
-        client_id: &str,
-    ) -> Result<Option<String>, AtomicCoreError> {
-        pg_runtime_block_on(self.get_oauth_client_name(client_id))
-    }
-
-    pub(crate) fn get_oauth_client_redirect_uris_sync(
-        &self,
-        client_id: &str,
-    ) -> Result<Option<String>, AtomicCoreError> {
-        pg_runtime_block_on(self.get_oauth_client_redirect_uris(client_id))
-    }
-
-    pub(crate) fn get_oauth_client_secret_hash_sync(
-        &self,
-        client_id: &str,
-    ) -> Result<Option<String>, AtomicCoreError> {
-        pg_runtime_block_on(self.get_oauth_client_secret_hash(client_id))
-    }
-
-    pub(crate) fn store_oauth_code_sync(
-        &self,
-        code_hash: &str,
-        client_id: &str,
-        code_challenge: &str,
-        code_challenge_method: &str,
-        redirect_uri: &str,
-        created_at: &str,
-        expires_at: &str,
-    ) -> Result<(), AtomicCoreError> {
-        pg_runtime_block_on(self.store_oauth_code(
-            code_hash,
-            client_id,
-            code_challenge,
-            code_challenge_method,
-            redirect_uri,
-            created_at,
-            expires_at,
-        ))
-    }
-
-    pub(crate) fn lookup_oauth_code_sync(
-        &self,
-        code_hash: &str,
-    ) -> Result<Option<OAuthCodeInfo>, AtomicCoreError> {
-        pg_runtime_block_on(self.lookup_oauth_code(code_hash))
-    }
-
-    pub(crate) fn mark_oauth_code_used_sync(
-        &self,
-        code_hash: &str,
-        token_id: Option<&str>,
-    ) -> Result<(), AtomicCoreError> {
-        pg_runtime_block_on(self.mark_oauth_code_used(code_hash, token_id))
-    }
 }

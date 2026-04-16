@@ -60,7 +60,7 @@ pub async fn get_ollama_llm_models(query: web::Query<OllamaHostQuery>) -> HttpRe
 
 #[utoipa::path(get, path = "/api/provider/verify", responses((status = 200, description = "Whether an AI provider is configured")), tag = "providers")]
 pub async fn verify_provider_configured(db: Db) -> HttpResponse {
-    let settings = match db.0.get_settings() {
+    let settings = match db.0.get_settings().await {
         Ok(s) => s,
         Err(e) => return crate::error::error_response(e),
     };

@@ -184,6 +184,7 @@ async fn select_update_chunks(
                     &existing.article.updated_at,
                     ctx.max_source_tokens(),
                 )
+                .await
                 .map_err(|e| e.to_string())
         }
         WikiStrategy::Agentic => {

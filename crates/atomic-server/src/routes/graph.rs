@@ -1,7 +1,7 @@
 //! Semantic graph routes
 
 use crate::db_extractor::Db;
-use crate::error::blocking_ok;
+use crate::error::ok_or_error;
 use actix_web::{web, HttpResponse};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -19,8 +19,7 @@ pub async fn get_semantic_edges(
     query: web::Query<EdgesQuery>,
 ) -> HttpResponse {
     let min_similarity = query.min_similarity.unwrap_or(0.5);
-    let core = db.0;
-    blocking_ok(move || core.get_semantic_edges(min_similarity)).await
+    ok_or_error(db.0.get_semantic_edges(min_similarity).await)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -41,8 +40,7 @@ pub async fn get_atom_neighborhood(
     let atom_id = path.into_inner();
     let depth = query.depth.unwrap_or(1);
     let min_similarity = query.min_similarity.unwrap_or(0.5);
-    let core = db.0;
-    blocking_ok(move || core.get_atom_neighborhood(&atom_id, depth, min_similarity)).await
+    ok_or_error(db.0.get_atom_neighborhood(&atom_id, depth, min_similarity).await)
 }
 
 /// Queue a full rebuild of the semantic-edge graph.
@@ -54,6 +52,5 @@ pub async fn get_atom_neighborhood(
 /// events over WebSocket.
 #[utoipa::path(post, path = "/api/graph/rebuild-edges", responses((status = 200, description = "Edge rebuild queued; returns the number of atoms queued for recomputation")), tag = "graph")]
 pub async fn rebuild_semantic_edges(db: Db) -> HttpResponse {
-    let core = db.0;
-    blocking_ok(move || core.rebuild_semantic_edges()).await
+    ok_or_error(db.0.rebuild_semantic_edges().await)
 }

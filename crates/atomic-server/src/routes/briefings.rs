@@ -1,7 +1,7 @@
 //! Daily briefing routes.
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, error_response, ApiErrorResponse};
+use crate::error::{error_response, ok_or_error, ApiErrorResponse};
 use crate::state::{AppState, ServerEvent};
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
@@ -17,14 +17,11 @@ use utoipa::{IntoParams, ToSchema};
     tag = "briefings"
 )]
 pub async fn get_latest_briefing(db: Db) -> HttpResponse {
-    let core = db.0;
-    match web::block(move || core.get_latest_briefing()).await {
-        Ok(Ok(Some(b))) => HttpResponse::Ok().json(b),
-        Ok(Ok(None)) => HttpResponse::NotFound()
+    match db.0.get_latest_briefing().await {
+        Ok(Some(b)) => HttpResponse::Ok().json(b),
+        Ok(None) => HttpResponse::NotFound()
             .json(serde_json::json!({"error": "No briefings yet"})),
-        Ok(Err(e)) => error_response(e),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": format!("Thread pool error: {}", e)})),
+        Err(e) => error_response(e),
     }
 }
 
@@ -46,8 +43,7 @@ pub struct ListBriefingsQuery {
 )]
 pub async fn list_briefings(db: Db, query: web::Query<ListBriefingsQuery>) -> HttpResponse {
     let limit = query.limit.unwrap_or(20).clamp(1, 100);
-    let core = db.0;
-    blocking_ok(move || core.list_briefings(limit)).await
+    ok_or_error(db.0.list_briefings(limit).await)
 }
 
 #[utoipa::path(
@@ -60,15 +56,12 @@ pub async fn list_briefings(db: Db, query: web::Query<ListBriefingsQuery>) -> Ht
     tag = "briefings"
 )]
 pub async fn get_briefing(db: Db, path: web::Path<String>) -> HttpResponse {
-    let core = db.0;
     let id = path.into_inner();
-    match web::block(move || core.get_briefing(&id)).await {
-        Ok(Ok(Some(b))) => HttpResponse::Ok().json(b),
-        Ok(Ok(None)) => HttpResponse::NotFound()
+    match db.0.get_briefing(&id).await {
+        Ok(Some(b)) => HttpResponse::Ok().json(b),
+        Ok(None) => HttpResponse::NotFound()
             .json(serde_json::json!({"error": "Briefing not found"})),
-        Ok(Err(e)) => error_response(e),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": format!("Thread pool error: {}", e)})),
+        Err(e) => error_response(e),
     }
 }
 
@@ -86,7 +79,7 @@ pub async fn run_briefing_now(
     req: HttpRequest,
 ) -> HttpResponse {
     // Resolve the target core before we start (same logic as Db extractor).
-    let core = match state.resolve_core(&req) {
+    let core = match state.resolve_core(&req).await {
         Ok(c) => c,
         Err(e) => return error_response(e),
     };

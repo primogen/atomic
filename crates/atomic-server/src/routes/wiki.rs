@@ -1,32 +1,26 @@
 //! Wiki article routes
 
 use crate::db_extractor::Db;
-use crate::error::{blocking_ok, ApiErrorResponse};
+use crate::error::{ok_or_error, ApiErrorResponse};
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(get, path = "/api/wiki", responses((status = 200, description = "All wiki articles", body = Vec<atomic_core::WikiArticleSummary>)), tag = "wiki")]
 pub async fn get_all_wiki_articles(db: Db) -> HttpResponse {
-    match db.0.get_all_wiki_articles() {
-        Ok(articles) => HttpResponse::Ok().json(articles),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e.to_string()})),
-    }
+    ok_or_error(db.0.get_all_wiki_articles().await)
 }
 
 #[utoipa::path(get, path = "/api/wiki/{tag_id}", params(("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Wiki article with citations", body = atomic_core::WikiArticleWithCitations), (status = 404, description = "No article for tag", body = ApiErrorResponse)), tag = "wiki")]
 pub async fn get_wiki(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.get_wiki(&tag_id)).await
+    ok_or_error(db.0.get_wiki(&tag_id).await)
 }
 
 #[utoipa::path(get, path = "/api/wiki/{tag_id}/status", params(("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Wiki article status", body = atomic_core::WikiArticleStatus)), tag = "wiki")]
 pub async fn get_wiki_status(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.get_wiki_status(&tag_id)).await
+    ok_or_error(db.0.get_wiki_status(&tag_id).await)
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -64,8 +58,7 @@ pub async fn update_wiki(
 #[utoipa::path(delete, path = "/api/wiki/{tag_id}", params(("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Wiki deleted")), tag = "wiki")]
 pub async fn delete_wiki(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.delete_wiki(&tag_id)).await
+    ok_or_error(db.0.delete_wiki(&tag_id).await)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -83,15 +76,13 @@ pub async fn get_related_tags(
 ) -> HttpResponse {
     let tag_id = path.into_inner();
     let limit = query.limit.unwrap_or(10);
-    let core = db.0;
-    blocking_ok(move || core.get_related_tags(&tag_id, limit)).await
+    ok_or_error(db.0.get_related_tags(&tag_id, limit).await)
 }
 
 #[utoipa::path(get, path = "/api/wiki/{tag_id}/links", params(("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Wiki cross-reference links", body = Vec<atomic_core::WikiLink>)), tag = "wiki")]
 pub async fn get_wiki_links(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.get_wiki_links(&tag_id)).await
+    ok_or_error(db.0.get_wiki_links(&tag_id).await)
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -107,27 +98,24 @@ pub async fn get_wiki_suggestions(
     query: web::Query<SuggestionsQuery>,
 ) -> HttpResponse {
     let limit = query.limit.unwrap_or(10);
-    let core = db.0;
-    blocking_ok(move || core.get_suggested_wiki_articles(limit)).await
+    ok_or_error(db.0.get_suggested_wiki_articles(limit).await)
 }
 
 #[utoipa::path(get, path = "/api/wiki/{tag_id}/versions", params(("tag_id" = String, Path, description = "Tag ID")), responses((status = 200, description = "Version history", body = Vec<atomic_core::WikiVersionSummary>)), tag = "wiki")]
 pub async fn list_wiki_versions(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.list_wiki_versions(&tag_id)).await
+    ok_or_error(db.0.list_wiki_versions(&tag_id).await)
 }
 
 #[utoipa::path(get, path = "/api/wiki/versions/{version_id}", params(("version_id" = String, Path, description = "Version ID")), responses((status = 200, description = "Wiki article version", body = atomic_core::WikiArticleVersion)), tag = "wiki")]
 pub async fn get_wiki_version(db: Db, path: web::Path<String>) -> HttpResponse {
     let version_id = path.into_inner();
-    let core = db.0;
-    blocking_ok(move || core.get_wiki_version(&version_id)).await
+    ok_or_error(db.0.get_wiki_version(&version_id).await)
 }
 
 #[utoipa::path(post, path = "/api/wiki/recompute-tag-embeddings", responses((status = 200, description = "Recomputed tag embeddings")), tag = "wiki")]
 pub async fn recompute_all_tag_embeddings(db: Db) -> HttpResponse {
-    match db.0.recompute_all_tag_embeddings() {
+    match db.0.recompute_all_tag_embeddings().await {
         Ok(count) => HttpResponse::Ok().json(serde_json::json!({"count": count})),
         Err(e) => crate::error::error_response(e),
     }
@@ -173,7 +161,7 @@ pub async fn propose_wiki(
 )]
 pub async fn get_wiki_proposal(db: Db, path: web::Path<String>) -> HttpResponse {
     let tag_id = path.into_inner();
-    match db.0.get_wiki_proposal(&tag_id) {
+    match db.0.get_wiki_proposal(&tag_id).await {
         Ok(Some(proposal)) => HttpResponse::Ok().json(proposal),
         Ok(None) => HttpResponse::NotFound()
             .json(serde_json::json!({"error": "No pending proposal for this tag"})),
