@@ -2,6 +2,14 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.22.3 — 2026-04-16
+
+- Add Postgres-only deployment mode — the server no longer requires a local SQLite registry file, so Postgres deployments need no writable filesystem
+- Add Postgres variants of Docker images (`atomic-server-postgres` and `atomic-postgres`) for containerized Postgres deployments
+- Add `--storage` and `--database-url` flags to the `token` CLI command for managing API tokens against a Postgres backend
+- Fix briefing citations leaking source URLs from other databases in shared-schema (Postgres) deployments
+- Fix OAuth code redemption to use a single atomic update, preventing a partial-write race condition
+
 ## v1.22.2 — 2026-04-15
 
 - Add recency filter (`since_days`) to Chat and MCP search tools, letting the AI agent narrow results to recent notes when answering time-sensitive questions (e.g. "what did I write last week?")
