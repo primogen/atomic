@@ -28,11 +28,12 @@ export default class AtomicPlugin extends Plugin {
     this.client = new AtomicClient(this.settings);
     this.ws = new AtomicWebSocket(this.settings);
 
+    const data = (await this.loadData()) as PluginData | null;
     this.syncEngine = new SyncEngine(
       this.app,
       this.client,
       this.settings,
-      (await this.loadData())?.syncState,
+      data?.syncState,
       () => this.savePluginData()
     );
 
@@ -50,7 +51,7 @@ export default class AtomicPlugin extends Plugin {
       name: "Sync current note",
       editorCheckCallback: (checking, _editor, ctx) => {
         if (!ctx.file) return false;
-        if (!checking) this.syncEngine.syncCurrentFile();
+        if (!checking) void this.syncEngine.syncCurrentFile();
         return true;
       },
     });
@@ -58,7 +59,7 @@ export default class AtomicPlugin extends Plugin {
     this.addCommand({
       id: "sync-vault",
       name: "Sync entire vault",
-      callback: () => this.syncEngine.syncAll(),
+      callback: () => { void this.syncEngine.syncAll(); },
     });
 
     this.addCommand({
@@ -72,7 +73,7 @@ export default class AtomicPlugin extends Plugin {
       name: "Open similar notes",
       editorCheckCallback: (checking, _editor, ctx) => {
         if (!ctx.file) return false;
-        if (!checking) this.activateView(SIMILAR_VIEW_TYPE);
+        if (!checking) void this.activateView(SIMILAR_VIEW_TYPE);
         return true;
       },
     });
@@ -80,19 +81,19 @@ export default class AtomicPlugin extends Plugin {
     this.addCommand({
       id: "open-wiki",
       name: "Open wiki",
-      callback: () => this.activateView(WIKI_VIEW_TYPE),
+      callback: () => { void this.activateView(WIKI_VIEW_TYPE); },
     });
 
     this.addCommand({
       id: "open-chat",
       name: "Open chat",
-      callback: () => this.activateView(CHAT_VIEW_TYPE),
+      callback: () => { void this.activateView(CHAT_VIEW_TYPE); },
     });
 
     this.addCommand({
       id: "open-canvas",
       name: "Open knowledge graph canvas",
-      callback: () => this.activateCanvasView(),
+      callback: () => { void this.activateCanvasView(); },
     });
 
     this.addCommand({
@@ -127,11 +128,12 @@ export default class AtomicPlugin extends Plugin {
       this.syncEngine.startWatching();
     }
 
-    // First-run: open onboarding wizard if no auth token configured
+    // First-run: open onboarding wizard if no auth token configured.
+    // Defer one tick so Obsidian has finished initial workspace layout.
     if (!this.settings.authToken) {
-      setTimeout(() => {
+      this.app.workspace.onLayoutReady(() => {
         new OnboardingModal(this.app, this).open();
-      }, 500);
+      });
     }
 
     // Status bar
@@ -141,14 +143,14 @@ export default class AtomicPlugin extends Plugin {
     statusEl.createSpan({ text: "Atomic" });
   }
 
-  async onunload(): Promise<void> {
+  onunload(): void {
     this.syncEngine.stopWatching();
     this.ws.close();
   }
 
   async loadSettings(): Promise<void> {
-    const data: PluginData | null = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings);
+    const data = (await this.loadData()) as PluginData | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
   }
 
   async saveSettings(): Promise<void> {
@@ -168,12 +170,12 @@ export default class AtomicPlugin extends Plugin {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(CANVAS_VIEW_TYPE);
     if (existing.length > 0) {
-      workspace.revealLeaf(existing[0]);
+      await workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf = workspace.getLeaf("tab");
     await leaf.setViewState({ type: CANVAS_VIEW_TYPE, active: true });
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
 
   private async activateView(viewType: string): Promise<void> {
@@ -192,7 +194,7 @@ export default class AtomicPlugin extends Plugin {
     }
 
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      await workspace.revealLeaf(leaf);
     }
   }
 }

@@ -67,7 +67,7 @@ export class ChatView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Atomic Chat";
+    return "Atomic chat";
   }
 
   getIcon(): string {
@@ -90,9 +90,10 @@ export class ChatView extends ItemView {
     }
   }
 
-  async onClose(): Promise<void> {
+  onClose(): Promise<void> {
     this.unsubscribeWs?.();
     this.unsubscribeWs = null;
+    return Promise.resolve();
   }
 
   // ------------------------------------------------------------------
@@ -340,7 +341,7 @@ export class ChatView extends ItemView {
   }
 
   private conversationTitle(): string {
-    if (!this.active) return "Atomic Chat";
+    if (!this.active) return "Atomic chat";
     if (this.active.title) return this.active.title;
     const firstUser = this.active.messages.find((m) => m.role === "user");
     if (firstUser) {
@@ -380,10 +381,10 @@ export class ChatView extends ItemView {
         const tagsEl = row.createDiv({ cls: "atomic-chat-conv-tags" });
         tagsEl.setText(conv.tags.map((t) => `#${t.name}`).join(" "));
       }
-      row.addEventListener("click", async () => {
+      row.addEventListener("click", () => {
         this.conversationListOpen = false;
         this.renderConversationList();
-        await this.selectConversation(conv.id);
+        void this.selectConversation(conv.id);
       });
     }
   }
@@ -415,10 +416,10 @@ export class ChatView extends ItemView {
         const chip = chipsEl.createEl("span", { cls: "atomic-chat-scope-pill" });
         chip.setText(`#${tag.name}`);
         const x = chip.createEl("button", { cls: "atomic-chat-scope-remove", text: "×" });
-        x.addEventListener("click", async () => {
+        x.addEventListener("click", () => {
           currentTags.delete(tag.id);
           renderChips();
-          await this.commitScope([...currentTags.keys()]);
+          void this.commitScope([...currentTags.keys()]);
         });
       }
       if (currentTags.size === 0) {
@@ -447,7 +448,7 @@ export class ChatView extends ItemView {
       for (const tag of matches) {
         const row = suggestions.createDiv({ cls: "atomic-chat-scope-suggest-row" });
         row.setText(`#${tag.name}`);
-        row.addEventListener("click", async () => {
+        row.addEventListener("click", () => {
           currentTags.set(tag.id, {
             id: tag.id,
             name: tag.name,
@@ -457,7 +458,7 @@ export class ChatView extends ItemView {
           input.value = "";
           updateSuggestions();
           renderChips();
-          await this.commitScope([...currentTags.keys()]);
+          void this.commitScope([...currentTags.keys()]);
         });
       }
     };
@@ -541,7 +542,7 @@ export class ChatView extends ItemView {
     const body = bubble.createDiv({ cls: "atomic-chat-msg-body" });
     const rewritten = this.rewriteCitations(msg.content, msg.citations);
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-    MarkdownRenderer.render(this.app, rewritten, body, sourcePath, this);
+    void MarkdownRenderer.render(this.app, rewritten, body, sourcePath, this);
     this.wireLinkClicks(body, sourcePath, msg.citations);
   }
 
@@ -560,7 +561,7 @@ export class ChatView extends ItemView {
 
     const body = bubble.createDiv({ cls: "atomic-chat-msg-body" });
     if (this.streaming.content) {
-      MarkdownRenderer.render(
+      void MarkdownRenderer.render(
         this.app,
         this.streaming.content,
         body,
@@ -617,7 +618,7 @@ export class ChatView extends ItemView {
     for (const c of citations) byIndex.set(c.citation_index, c);
     const vaultPrefix = `obsidian://${this.getVaultName()}/`;
 
-    return content.replace(/\[(\d+)\]/g, (match, idxStr) => {
+    return content.replace(/\[(\d+)\]/g, (match, idxStr: string) => {
       const index = parseInt(idxStr, 10);
       const cit = byIndex.get(index);
       if (!cit) return match;
@@ -651,31 +652,33 @@ export class ChatView extends ItemView {
   ): void {
     root.addEventListener(
       "click",
-      async (evt) => {
-        const target = evt.target as HTMLElement | null;
-        const link = target?.closest("a") as HTMLAnchorElement | null;
-        if (!link) return;
-        evt.preventDefault();
-        evt.stopPropagation();
-
-        const href = link.getAttribute("data-href") ?? link.getAttribute("href") ?? "";
-
-        // Uncached citation marker — fetch atom, cache, then either open the
-        // vault note or show the excerpt.
-        if (href.startsWith("atomic-citation:")) {
-          const atomId = href.slice("atomic-citation:".length);
-          await this.handleCitationClick(atomId, citations);
-          return;
-        }
-
-        // Cross-wiki reference — switch the wiki view isn't available here,
-        // so fall back to Obsidian's link resolution, which will treat it as
-        // a vault note if one exists.
-        const newLeaf = evt.ctrlKey || evt.metaKey;
-        this.app.workspace.openLinkText(href, sourcePath, newLeaf);
-      },
+      (evt) => { void this.onLinkClick(evt, sourcePath, citations); },
       true
     );
+  }
+
+  private async onLinkClick(evt: MouseEvent, sourcePath: string, citations: ChatCitation[]): Promise<void> {
+    const target = evt.target as HTMLElement | null;
+    const link = target?.closest("a") as HTMLAnchorElement | null;
+    if (!link) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    const href = link.getAttribute("data-href") ?? link.getAttribute("href") ?? "";
+
+    // Uncached citation marker — fetch atom, cache, then either open the
+    // vault note or show the excerpt.
+    if (href.startsWith("atomic-citation:")) {
+      const atomId = href.slice("atomic-citation:".length);
+      await this.handleCitationClick(atomId, citations);
+      return;
+    }
+
+    // Cross-wiki reference — switch the wiki view isn't available here,
+    // so fall back to Obsidian's link resolution, which will treat it as
+    // a vault note if one exists.
+    const newLeaf = evt.ctrlKey || evt.metaKey;
+    await this.app.workspace.openLinkText(href, sourcePath, newLeaf);
   }
 
   private async handleCitationClick(atomId: string, citations: ChatCitation[]): Promise<void> {
@@ -718,8 +721,8 @@ export class ChatView extends ItemView {
 
   private autoResizeInput(): void {
     if (!this.inputEl) return;
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = `${Math.min(this.inputEl.scrollHeight, 200)}px`;
+    this.inputEl.setCssStyles({ height: "auto" });
+    this.inputEl.setCssStyles({ height: `${Math.min(this.inputEl.scrollHeight, 200)}px` });
   }
 
   private updateSendButton(): void {

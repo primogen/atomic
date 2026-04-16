@@ -1,6 +1,7 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import Graph from "graphology";
 import Sigma from "sigma";
+import type { NodeDisplayData } from "sigma/types";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import type AtomicPlugin from "./main";
 import { CANVAS_THEMES, DEFAULT_THEME, edgeColor, nodeColor, type CanvasTheme } from "./canvas-themes";
@@ -29,7 +30,7 @@ export class CanvasView extends ItemView {
   }
 
   getViewType(): string { return CANVAS_VIEW_TYPE; }
-  getDisplayText(): string { return "Atomic Canvas"; }
+  getDisplayText(): string { return "Atomic canvas"; }
   getIcon(): string { return "network"; }
 
   async onOpen(): Promise<void> {
@@ -42,7 +43,7 @@ export class CanvasView extends ItemView {
 
     try {
       if (!this.plugin.settings.authToken) {
-        statusEl.textContent = "Connect Atomic first via the Setup Wizard.";
+        statusEl.textContent = "Connect Atomic first via the setup wizard.";
         return;
       }
 
@@ -164,8 +165,16 @@ export class CanvasView extends ItemView {
           context.textBaseline = "middle";
           context.fillText(label, x + padding, nodeData.y);
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        nodeReducer: (n, attrs) => ({ ...attrs, labeled: this.labeledNodeIds.has(n) } as any),
+        nodeReducer: (n, attrs) => {
+          // sigma accepts extra attributes on NodeDisplayData (they're opaque
+          // to the renderer) — this one is read by defaultDrawNodeHover so we
+          // can skip the hover pill when the overlay already shows this label.
+          const extended: Partial<NodeDisplayData> & { labeled: boolean } = {
+            ...attrs,
+            labeled: this.labeledNodeIds.has(n),
+          };
+          return extended;
+        },
         edgeReducer: (_edge, attrs) => {
           const w = (attrs as { weight?: number }).weight ?? 0.5;
           return {
@@ -194,7 +203,7 @@ export class CanvasView extends ItemView {
         }).join("/");
         const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
-          this.plugin.app.workspace.getLeaf(false).openFile(file);
+          void this.plugin.app.workspace.getLeaf(false).openFile(file);
         } else {
           new Notice(`Note not found in this vault: ${filePath}`);
         }
@@ -372,12 +381,13 @@ export class CanvasView extends ItemView {
     this.labeledNodeIds = nextLabeled;
   }
 
-  async onClose(): Promise<void> {
+  onClose(): Promise<void> {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.sigmaInstance?.kill();
     this.sigmaInstance = null;
     this.labelCanvas = null;
+    return Promise.resolve();
   }
 }
 

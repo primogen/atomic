@@ -19,15 +19,17 @@ export class SearchModal extends SuggestModal<SearchResult> {
     return new Promise((resolve) => {
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
 
-      this.debounceTimer = setTimeout(async () => {
-        try {
-          this.results = await this.client.search(query, "hybrid", 20);
-          resolve(this.results);
-        } catch (e) {
-          console.error("Atomic search failed:", e);
-          new Notice(`Search failed: ${e instanceof Error ? e.message : String(e)}`);
-          resolve([]);
-        }
+      this.debounceTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            this.results = await this.client.search(query, "hybrid", 20);
+            resolve(this.results);
+          } catch (e) {
+            console.error("Atomic search failed:", e);
+            new Notice(`Search failed: ${e instanceof Error ? e.message : String(e)}`);
+            resolve([]);
+          }
+        })();
       }, 300);
     });
   }
@@ -60,7 +62,7 @@ export class SearchModal extends SuggestModal<SearchResult> {
       if (filePath) {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
-          this.app.workspace.getLeaf(false).openFile(file);
+          void this.app.workspace.getLeaf(false).openFile(file);
           return;
         }
       }

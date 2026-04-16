@@ -58,6 +58,12 @@ export class SyncEngine {
   }
 
   private shouldExclude(path: string): boolean {
+    // Obsidian's config folder is user-configurable — read it at runtime rather
+    // than hard-coding `.obsidian`. We also skip the trash unconditionally.
+    const configDir = this.app.vault.configDir;
+    if (path === configDir || path.startsWith(`${configDir}/`)) return true;
+    if (path === ".trash" || path.startsWith(".trash/")) return true;
+
     for (const pattern of this.settings.excludePatterns) {
       // Simple glob matching: ** matches any path, * matches any segment
       const regex = pattern
@@ -232,7 +238,7 @@ export class SyncEngine {
       return;
     }
     if (!this.isMarkdownFile(file)) {
-      new Notice("Active file is not a markdown file");
+      new Notice("Active file is not a Markdown file");
       return;
     }
     try {

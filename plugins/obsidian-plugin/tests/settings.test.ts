@@ -8,7 +8,7 @@ describe("DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.authToken).toBe("");
     expect(DEFAULT_SETTINGS.autoSync).toBe(true);
     expect(DEFAULT_SETTINGS.syncDebounceMs).toBe(2000);
-    expect(DEFAULT_SETTINGS.excludePatterns).toContain(".obsidian/**");
+    expect(DEFAULT_SETTINGS.excludePatterns).toContain(".git/**");
     expect(DEFAULT_SETTINGS.deleteOnRemove).toBe(false);
   });
 });
