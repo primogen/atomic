@@ -105,7 +105,8 @@ export class AtomicWebSocket {
     this.socket.addEventListener("message", (evt) => {
       let data: ServerEvent;
       try {
-        data = JSON.parse(evt.data);
+        const raw = typeof evt.data === "string" ? evt.data : String(evt.data);
+        data = JSON.parse(raw) as ServerEvent;
       } catch {
         return;
       }

@@ -25,7 +25,7 @@ export class SimilarView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Similar Notes";
+    return "Similar notes";
   }
 
   getIcon(): string {
@@ -55,7 +55,7 @@ export class SimilarView extends ItemView {
 
     if (!info) {
       this.results = [];
-      this.render("Note not synced to Atomic yet. Use 'Sync Current Note' first.");
+      this.render("Note not synced to Atomic yet. Use 'Sync current note' first.");
       return;
     }
 
@@ -115,7 +115,7 @@ export class SimilarView extends ItemView {
             const filePath = decodeURIComponent(match[1]);
             const file = this.app.vault.getAbstractFileByPath(filePath);
             if (file instanceof TFile) {
-              this.app.workspace.getLeaf(false).openFile(file);
+              void this.app.workspace.getLeaf(false).openFile(file);
               return;
             }
           }

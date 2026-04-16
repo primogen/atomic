@@ -47,7 +47,7 @@ describe("OnboardingModal", () => {
     const modal = new OnboardingModal(app, plugin);
     modal.onOpen();
     const btn = Array.from(modal.contentEl.querySelectorAll("button")).find(
-      (b) => b.textContent === "Get Started"
+      (b) => b.textContent === "Get started"
     );
     expect(btn).toBeTruthy();
     btn!.click();
@@ -67,7 +67,7 @@ describe("OnboardingModal", () => {
       ) as HTMLButtonElement | undefined;
     const getTest = () =>
       Array.from(modal.contentEl.querySelectorAll("button")).find(
-        (b) => b.textContent === "Test Connection"
+        (b) => b.textContent === "Test connection"
       ) as HTMLButtonElement | undefined;
 
     expect(getNext()?.disabled).toBe(true);
@@ -101,7 +101,7 @@ describe("OnboardingModal", () => {
       arrayBuffer: new ArrayBuffer(0),
     });
     const testBtn = Array.from(modal.contentEl.querySelectorAll("button")).find(
-      (b) => b.textContent === "Test Connection"
+      (b) => b.textContent === "Test connection"
     ) as HTMLButtonElement;
     testBtn.click();
     await new Promise((r) => setTimeout(r, 20));

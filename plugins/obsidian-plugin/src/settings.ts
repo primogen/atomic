@@ -20,7 +20,10 @@ export const DEFAULT_SETTINGS: AtomicSettings = {
   vaultName: "",
   autoSync: true,
   syncDebounceMs: 2000,
-  excludePatterns: [".obsidian/**", ".trash/**", ".git/**", "node_modules/**"],
+  // `Vault.configDir` (e.g. `.obsidian`) and `.trash` are always excluded at
+  // runtime — see `SyncEngine.shouldExclude` — so we only seed the
+  // user-editable list with patterns for directories Obsidian can't infer.
+  excludePatterns: [".git/**", "node_modules/**"],
   syncFolderTags: true,
   deleteOnRemove: false,
 };
@@ -41,10 +44,10 @@ export class AtomicSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("URL of your atomic-server instance")
+      .setDesc("URL of your Atomic server instance")
       .addText((text) =>
         text
-          .setPlaceholder("http://localhost:8080")
+          .setPlaceholder("Example: localhost:8080")
           .setValue(this.plugin.settings.serverUrl)
           .onChange(async (value) => {
             this.plugin.settings.serverUrl = value;
@@ -72,7 +75,7 @@ export class AtomicSettingTab extends PluginSettingTab {
       .setDesc("Name of the Atomic database to sync with (leave empty for default)")
       .addText((text) =>
         text
-          .setPlaceholder("default")
+          .setPlaceholder("Default")
           .setValue(this.plugin.settings.databaseName)
           .onChange(async (value) => {
             this.plugin.settings.databaseName = value;
@@ -166,12 +169,13 @@ export class AtomicSettingTab extends PluginSettingTab {
         })
       );
 
+    const configDir = this.app.vault.configDir;
     new Setting(containerEl)
       .setName("Exclude patterns")
-      .setDesc("Glob patterns to exclude from sync, one per line")
+      .setDesc(`Glob patterns to exclude from sync, one per line. The vault config folder (${configDir}) and .trash are always excluded.`)
       .addTextArea((text) =>
         text
-          .setPlaceholder(".obsidian/**\n.trash/**")
+          .setPlaceholder(".git/**\nnode_modules/**")
           .setValue(this.plugin.settings.excludePatterns.join("\n"))
           .onChange(async (value) => {
             this.plugin.settings.excludePatterns = value

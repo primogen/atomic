@@ -92,7 +92,7 @@ export class OnboardingModal extends Modal {
     }
 
     const footer = container.createDiv({ cls: "atomic-onboarding-footer" });
-    const btn = footer.createEl("button", { text: "Get Started", cls: "mod-cta" });
+    const btn = footer.createEl("button", { text: "Get started", cls: "mod-cta" });
     btn.addEventListener("click", () => { this.currentStep = 1; this.render(); });
   }
 
@@ -111,7 +111,7 @@ export class OnboardingModal extends Modal {
       .setName("Server URL")
       .addText((text) =>
         text
-          .setPlaceholder("http://localhost:8080")
+          .setPlaceholder("Example: localhost:8080")
           .setValue(this.plugin.settings.serverUrl)
           .onChange((value) => {
             this.plugin.settings.serverUrl = value;
@@ -121,7 +121,7 @@ export class OnboardingModal extends Modal {
       );
 
     new Setting(form)
-      .setName("API Token")
+      .setName("API token")
       .addText((text) => {
         text
           .setPlaceholder("Enter your API token")
@@ -139,7 +139,7 @@ export class OnboardingModal extends Modal {
       .setDesc("Leave empty for default")
       .addText((text) =>
         text
-          .setPlaceholder("default")
+          .setPlaceholder("Default")
           .setValue(this.plugin.settings.databaseName)
           .onChange((value) => {
             this.plugin.settings.databaseName = value;
@@ -150,34 +150,10 @@ export class OnboardingModal extends Modal {
 
     // Test connection area
     const testArea = container.createDiv({ cls: "atomic-onboarding-test" });
-    const testBtn = testArea.createEl("button", { text: "Test Connection" });
+    const testBtn = testArea.createEl("button", { text: "Test connection" });
     const testStatus = testArea.createDiv({ cls: "atomic-onboarding-test-status" });
 
-    testBtn.addEventListener("click", async () => {
-      testBtn.disabled = true;
-      testBtn.textContent = "Testing...";
-      testStatus.empty();
-      testStatus.removeClass("success", "error");
-
-      // Update the client with current settings
-      this.plugin.client = new (await import("./atomic-client")).AtomicClient(this.plugin.settings);
-
-      try {
-        await this.plugin.client.testConnection();
-        this.connectionVerified = true;
-        testStatus.addClass("success");
-        testStatus.textContent = "Connected successfully";
-        await this.plugin.saveSettings();
-      } catch (e) {
-        this.connectionVerified = false;
-        testStatus.addClass("error");
-        testStatus.textContent = e instanceof Error ? e.message : "Connection failed";
-      }
-
-      testBtn.disabled = false;
-      testBtn.textContent = "Test Connection";
-      this.updateConnectButtons();
-    });
+    testBtn.addEventListener("click", () => { void this.runConnectionTest(testBtn, testStatus); });
 
     // Footer
     const footer = container.createDiv({ cls: "atomic-onboarding-footer" });
@@ -199,6 +175,32 @@ export class OnboardingModal extends Modal {
     if (this._connectNextBtn) {
       this._connectNextBtn.disabled = !this.connectionVerified;
     }
+  }
+
+  private async runConnectionTest(testBtn: HTMLButtonElement, testStatus: HTMLElement): Promise<void> {
+    testBtn.disabled = true;
+    testBtn.textContent = "Testing...";
+    testStatus.empty();
+    testStatus.removeClass("success", "error");
+
+    const { AtomicClient } = await import("./atomic-client");
+    this.plugin.client = new AtomicClient(this.plugin.settings);
+
+    try {
+      await this.plugin.client.testConnection();
+      this.connectionVerified = true;
+      testStatus.addClass("success");
+      testStatus.textContent = "Connected successfully";
+      await this.plugin.saveSettings();
+    } catch (e) {
+      this.connectionVerified = false;
+      testStatus.addClass("error");
+      testStatus.textContent = e instanceof Error ? e.message : "Connection failed";
+    }
+
+    testBtn.disabled = false;
+    testBtn.textContent = "Test connection";
+    this.updateConnectButtons();
   }
 
   // --- Step 3: Index Vault ---
@@ -261,9 +263,10 @@ export class OnboardingModal extends Modal {
     const skipLink = footer.createEl("button", { cls: "atomic-skip-link", text: "Skip for now" });
     skipLink.addEventListener("click", () => { this.currentStep = 3; this.render(); });
 
-    const startBtn = footer.createEl("button", { text: "Start Indexing", cls: "mod-cta" });
+    const startBtn = footer.createEl("button", { text: "Start indexing", cls: "mod-cta" });
 
-    startBtn.addEventListener("click", async () => {
+    startBtn.addEventListener("click", () => { void startIndexing(); });
+    const startIndexing = async (): Promise<void> => {
       startBtn.disabled = true;
       startBtn.textContent = "Indexing...";
       skipLink.addClass("hidden");
@@ -304,7 +307,7 @@ export class OnboardingModal extends Modal {
 
       // --- Phase 2: track embedding + tagging via WS + reconciliation ---
 
-      barFill.style.width = "100%";
+      barFill.setCssStyles({ width: "100%" });
       aiArea.removeClass("hidden");
 
       const total = atomIds.length;
@@ -391,7 +394,7 @@ export class OnboardingModal extends Modal {
       } catch (e) {
         console.error("Atomic: Reconciliation failed during onboarding:", e);
       }
-    });
+    };
   }
 
   // --- Step 4: Done ---
@@ -442,13 +445,15 @@ export class OnboardingModal extends Modal {
 
     const footer = container.createDiv({ cls: "atomic-onboarding-footer" });
     const finishBtn = footer.createEl("button", { text: "Finish", cls: "mod-cta" });
-    finishBtn.addEventListener("click", async () => {
-      await this.plugin.saveSettings();
-      if (this.plugin.settings.autoSync) {
-        this.plugin.syncEngine.startWatching();
-      }
-      this.close();
-    });
+    finishBtn.addEventListener("click", () => { void this.finishOnboarding(); });
+  }
+
+  private async finishOnboarding(): Promise<void> {
+    await this.plugin.saveSettings();
+    if (this.plugin.settings.autoSync) {
+      this.plugin.syncEngine.startWatching();
+    }
+    this.close();
   }
 
   private renderFeatureCard(

@@ -24,7 +24,7 @@ export class WikiView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Atomic Wiki";
+    return "Atomic wiki";
   }
 
   getIcon(): string {
@@ -90,18 +90,45 @@ export class WikiView extends ItemView {
       select.value = this.selectedTagId;
     }
 
-    select.addEventListener("change", async () => {
-      this.selectedTagId = select.value || null;
-      if (this.selectedTagId) {
-        await this.loadArticle(this.selectedTagId);
-      } else {
-        this.article = null;
-      }
-      this.renderContent(wrapper);
+    select.addEventListener("change", () => {
+      void this.onTagChange(select.value || null, wrapper);
     });
 
     // Content area
     this.renderContent(wrapper);
+  }
+
+  private async onTagChange(tagId: string | null, wrapper: HTMLElement): Promise<void> {
+    this.selectedTagId = tagId;
+    if (tagId) {
+      await this.loadArticle(tagId);
+    } else {
+      this.article = null;
+    }
+    this.renderContent(wrapper);
+  }
+
+  private async generateArticle(wrapper: HTMLElement, genBtn: HTMLButtonElement): Promise<void> {
+    if (!this.selectedTagId) return;
+    const tagName = this.findTagName(this.selectedTagId);
+    if (!tagName) {
+      genBtn.setText("Tag not found");
+      return;
+    }
+    this.generatingAtomCount = this.findTagAtomCount(this.selectedTagId);
+    this.loading = true;
+    this.renderContent(wrapper);
+    try {
+      this.article = await this.client.generateWikiArticle(this.selectedTagId, tagName);
+    } catch (e) {
+      console.error("Atomic: Failed to generate wiki:", e);
+      new Notice(`Couldn't generate article: ${e instanceof Error ? e.message : String(e)}`);
+      this.article = null;
+    } finally {
+      this.loading = false;
+      this.generatingAtomCount = null;
+      this.renderContent(wrapper);
+    }
   }
 
   private async loadArticle(tagId: string): Promise<void> {
@@ -149,29 +176,8 @@ export class WikiView extends ItemView {
       empty.setText("No article for this tag yet.");
 
       const actions = wrapper.createDiv({ cls: "atomic-wiki-actions" });
-      const genBtn = actions.createEl("button", { text: "Generate Article" });
-      genBtn.addEventListener("click", async () => {
-        if (!this.selectedTagId) return;
-        const tagName = this.findTagName(this.selectedTagId);
-        if (!tagName) {
-          genBtn.setText("Tag not found");
-          return;
-        }
-        this.generatingAtomCount = this.findTagAtomCount(this.selectedTagId);
-        this.loading = true;
-        this.renderContent(wrapper);
-        try {
-          this.article = await this.client.generateWikiArticle(this.selectedTagId, tagName);
-        } catch (e) {
-          console.error("Atomic: Failed to generate wiki:", e);
-          new Notice(`Couldn't generate article: ${e instanceof Error ? e.message : String(e)}`);
-          this.article = null;
-        } finally {
-          this.loading = false;
-          this.generatingAtomCount = null;
-          this.renderContent(wrapper);
-        }
-      });
+      const genBtn = actions.createEl("button", { text: "Generate article" });
+      genBtn.addEventListener("click", () => { void this.generateArticle(wrapper, genBtn); });
       return;
     }
 
@@ -181,36 +187,40 @@ export class WikiView extends ItemView {
       this.article.citations
     );
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-    MarkdownRenderer.render(this.app, rewritten, contentEl, sourcePath, this);
+    void MarkdownRenderer.render(this.app, rewritten, contentEl, sourcePath, this);
 
     // Obsidian's global click handler for .internal-link is scoped to
     // markdown file views, not custom ItemViews — wire it up manually.
-    contentEl.addEventListener("click", async (evt) => {
-      const target = evt.target as HTMLElement | null;
-      const link = target?.closest("a") as HTMLAnchorElement | null;
-      if (!link) return;
-      evt.preventDefault();
-      evt.stopPropagation();
-      const href = link.getAttribute("data-href") ?? link.getAttribute("href");
-      if (!href) return;
-
-      // Cross-wiki references: the LLM emits `[[Other Topic]]` when another
-      // wiki article exists for that tag. These look identical to Obsidian
-      // wikilinks, so we check the tag list first and switch the view when
-      // the target matches a known tag (case-insensitive, same as the core).
-      const tagMatch = this.findTagByName(href);
-      if (tagMatch) {
-        this.selectedTagId = tagMatch.id;
-        const select = wrapper.querySelector<HTMLSelectElement>(".atomic-wiki-tag-select");
-        if (select) select.value = tagMatch.id;
-        await this.loadArticle(tagMatch.id);
-        this.renderContent(wrapper);
-        return;
-      }
-
-      const newLeaf = evt.ctrlKey || evt.metaKey;
-      this.app.workspace.openLinkText(href, sourcePath, newLeaf);
+    contentEl.addEventListener("click", (evt) => {
+      void this.handleLinkClick(evt, wrapper, sourcePath);
     }, true);
+  }
+
+  private async handleLinkClick(evt: MouseEvent, wrapper: HTMLElement, sourcePath: string): Promise<void> {
+    const target = evt.target as HTMLElement | null;
+    const link = target?.closest("a") as HTMLAnchorElement | null;
+    if (!link) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    const href = link.getAttribute("data-href") ?? link.getAttribute("href");
+    if (!href) return;
+
+    // Cross-wiki references: the LLM emits `[[Other Topic]]` when another
+    // wiki article exists for that tag. These look identical to Obsidian
+    // wikilinks, so we check the tag list first and switch the view when
+    // the target matches a known tag (case-insensitive, same as the core).
+    const tagMatch = this.findTagByName(href);
+    if (tagMatch) {
+      this.selectedTagId = tagMatch.id;
+      const select = wrapper.querySelector<HTMLSelectElement>(".atomic-wiki-tag-select");
+      if (select) select.value = tagMatch.id;
+      await this.loadArticle(tagMatch.id);
+      this.renderContent(wrapper);
+      return;
+    }
+
+    const newLeaf = evt.ctrlKey || evt.metaKey;
+    await this.app.workspace.openLinkText(href, sourcePath, newLeaf);
   }
 
   /**
@@ -228,7 +238,7 @@ export class WikiView extends ItemView {
 
     const vaultPrefix = `obsidian://${this.getVaultName()}/`;
 
-    return content.replace(/\[(\d+)\]/g, (match, indexStr) => {
+    return content.replace(/\[(\d+)\]/g, (match, indexStr: string) => {
       const index = parseInt(indexStr, 10);
       const citation = byIndex.get(index);
       // Unknown citation index — leave the marker untouched rather than silently dropping it.

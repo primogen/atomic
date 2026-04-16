@@ -114,7 +114,7 @@ export interface ChatToolCall {
   message_id: string;
   tool_name: string;
   tool_input: unknown;
-  tool_output: unknown | null;
+  tool_output: unknown;
   status: "pending" | "running" | "complete" | "failed";
   created_at: string;
   completed_at: string | null;
@@ -218,8 +218,9 @@ export class AtomicClient {
     params.headers = { ...this.headers, ...params.headers };
     const response = await requestUrl(params);
     if (response.status >= 400) {
-      const error = response.json?.error || `HTTP ${response.status}`;
-      throw new Error(error);
+      const body = response.json as { error?: unknown } | null;
+      const errMsg = typeof body?.error === "string" ? body.error : `HTTP ${response.status}`;
+      throw new Error(errMsg);
     }
     return response.json as T;
   }
