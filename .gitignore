@@ -36,4 +36,4 @@ plugins/obsidian-plugin/main.js.map
 plugins/obsidian-plugin/data.json
 
 # Claude Code
-.claude/
+.claude/.worktrees/
