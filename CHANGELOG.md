@@ -2,6 +2,13 @@
 
 All notable changes to Atomic are documented here.
 
+## v1.24.1 — 2026-04-20
+
+- Add manual "Auto-tag" button in the atom reader for tagless atoms, letting you trigger AI tagging on demand
+- Improve embedding and tagging pipeline so autosaved drafts are reliably picked up and processed in the background
+- Fix bug where editing an atom would not re-run AI tagging, leaving stale or missing tags after content changes
+- Fix new-atom button getting hidden behind the chat sidebar when it opens
+
 ## v1.24.0 — 2026-04-19
 
 - Add Obsidian-style live-preview markdown editor — edit mode now renders headings, links, emphasis, images, and lists as formatted text; clicking a line reveals its raw markdown for editing, with scroll position preserved across view/edit toggles
