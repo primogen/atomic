@@ -1753,11 +1753,11 @@ impl AtomicCore {
 
         let storage = self.storage.clone();
         let atom_id = atom_id.to_string();
-        let bg_settings = self.settings_for_background();
+        let mut bg_settings = self.settings_for_background().unwrap_or_default();
+        bg_settings.insert("auto_tagging_enabled".to_string(), "true".to_string());
         let on_event = self.wrap_event_for_cache(on_event);
         executor::spawn(async move {
-            let settings = bg_settings.unwrap_or_default();
-            embedding::process_tagging_batch_with_settings(storage, vec![atom_id], on_event, settings).await;
+            embedding::process_tagging_batch_with_settings(storage, vec![atom_id], on_event, bg_settings).await;
         });
 
         Ok(())

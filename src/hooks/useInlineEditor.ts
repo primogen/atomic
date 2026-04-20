@@ -89,6 +89,13 @@ export function useInlineEditor({
     );
   }, [editContent, editSourceUrl, editTags]);
 
+  const hasPipelineRelevantChanges = useCallback(() => {
+    return (
+      editContent !== lastSavedRef.current.content ||
+      editSourceUrl !== lastSavedRef.current.sourceUrl
+    );
+  }, [editContent, editSourceUrl]);
+
   /** Content-only save (no pipeline). */
   const doContentSave = useCallback(async () => {
     if (isSavingRef.current) return;
@@ -97,6 +104,7 @@ export function useInlineEditor({
     const promise = (async () => {
       try {
         const tagIds = editTags.map(t => t.id);
+        const needsPipelineForThisSave = hasPipelineRelevantChanges();
         const saved = await updateAtomContentOnly(
           atom.id,
           editContent,
@@ -108,7 +116,9 @@ export function useInlineEditor({
           sourceUrl: editSourceUrl,
           tagIds: tagIds.sort().join(','),
         };
-        needsPipelineRef.current = true;
+        if (needsPipelineForThisSave) {
+          needsPipelineRef.current = true;
+        }
         setSaveStatus('saved');
         onAtomUpdated?.(saved);
       } catch {
@@ -119,10 +129,10 @@ export function useInlineEditor({
     })();
     savingPromiseRef.current = promise;
     await promise;
-  }, [atom.id, editContent, editSourceUrl, editTags, updateAtomContentOnly, onAtomUpdated]);
+  }, [atom.id, editContent, editSourceUrl, editTags, hasPipelineRelevantChanges, updateAtomContentOnly, onAtomUpdated]);
 
-  /** Flush latest draft then kick the background pipeline for this atom. */
-  const finalizePipeline = useCallback(async () => {
+  /** Flush latest draft and only kick the pipeline when content/source changed. */
+  const finalizeDraft = useCallback(async () => {
     // Wait for any in-flight content-only save to complete first
     await savingPromiseRef.current;
     setSaveStatus('saving');
@@ -130,8 +140,10 @@ export function useInlineEditor({
       if (isDirty()) {
         await doContentSave();
       }
-      await processAtomPipeline(atom.id);
-      needsPipelineRef.current = false;
+      if (needsPipelineRef.current) {
+        await processAtomPipeline(atom.id);
+        needsPipelineRef.current = false;
+      }
       setSaveStatus('saved');
       await fetchTags();
     } catch {
@@ -202,13 +214,13 @@ export function useInlineEditor({
           });
         };
         if (isDirty() || needsPipelineRef.current) {
-          finalizePipeline().then(finish, finish);
+          finalizeDraft().then(finish, finish);
         } else {
           finish();
         }
       });
     });
-  }, [isDirty, finalizePipeline, editContent, atom.id, deleteAtom, fetchTags]);
+  }, [isDirty, finalizeDraft, editContent, atom.id, deleteAtom, fetchTags]);
 
   /** Immediate content-only save (for Cmd+S). */
   const saveNow = useCallback(async () => {
