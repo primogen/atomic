@@ -85,8 +85,49 @@ function list(rng: () => number): string {
   const items: string[] = [];
   for (let i = 0; i < n; i++) {
     items.push('- ' + words(rng, 4 + Math.floor(rng() * 10)) + '.');
+    // Sprinkle in a nested sub-item once in a while so the harness has
+    // realistic indentation to render.
+    if (rng() < 0.35) {
+      items.push('  - ' + words(rng, 3 + Math.floor(rng() * 6)) + '.');
+      if (rng() < 0.3) {
+        items.push('    - ' + words(rng, 3 + Math.floor(rng() * 5)) + '.');
+      }
+    }
   }
   return items.join('\n');
+}
+
+function taskList(rng: () => number): string {
+  const n = 3 + Math.floor(rng() * 4);
+  const items: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const done = rng() < 0.4 ? 'x' : ' ';
+    items.push(`- [${done}] ` + words(rng, 3 + Math.floor(rng() * 8)) + '.');
+  }
+  return items.join('\n');
+}
+
+function table(rng: () => number): string {
+  const columns = 3 + Math.floor(rng() * 2);
+  const rows = 2 + Math.floor(rng() * 3);
+  const header = [] as string[];
+  const divider = [] as string[];
+  for (let c = 0; c < columns; c++) {
+    header.push(words(rng, 1 + Math.floor(rng() * 2)));
+    divider.push('---');
+  }
+  const lines: string[] = [
+    '| ' + header.join(' | ') + ' |',
+    '| ' + divider.join(' | ') + ' |',
+  ];
+  for (let r = 0; r < rows; r++) {
+    const cells: string[] = [];
+    for (let c = 0; c < columns; c++) {
+      cells.push(words(rng, 1 + Math.floor(rng() * 3)));
+    }
+    lines.push('| ' + cells.join(' | ') + ' |');
+  }
+  return lines.join('\n');
 }
 
 function codeBlock(rng: () => number): string {
@@ -116,10 +157,12 @@ function section(rng: () => number, idx: number): string {
   const blockCount = 3 + Math.floor(rng() * 4);
   for (let i = 0; i < blockCount; i++) {
     const pick = rng();
-    if (pick < 0.55) parts.push(paragraph(rng));
-    else if (pick < 0.75) parts.push(list(rng));
-    else if (pick < 0.88) parts.push(codeBlock(rng));
-    else if (pick < 0.95) parts.push(quote(rng));
+    if (pick < 0.42) parts.push(paragraph(rng));
+    else if (pick < 0.58) parts.push(list(rng));
+    else if (pick < 0.70) parts.push(taskList(rng));
+    else if (pick < 0.80) parts.push(table(rng));
+    else if (pick < 0.90) parts.push(codeBlock(rng));
+    else if (pick < 0.96) parts.push(quote(rng));
     else parts.push(link(rng));
   }
   return parts.join('\n\n');
@@ -154,6 +197,17 @@ export function generateSampleMarkdown(size: SampleSize): string {
   const sections: string[] = [
     `# Editor harness — ${size}`,
     `_A deterministic markdown sample used to stress-test the Atomic editor at scale. Seed: \`0xa70c1c ⊕ ${SECTIONS_PER_SIZE[size]}\`_`,
+    // Deterministic intro showcasing every block kind — gives the harness
+    // (and anyone opening the page) a consistent place to poke at
+    // headings, lists, task lists, tables, and code fences without
+    // scrolling through random content.
+    '## 0. Block showcase',
+    paragraph(rng),
+    list(rng),
+    taskList(rng),
+    table(rng),
+    codeBlock(rng),
+    quote(rng),
   ];
   for (let i = 1; i <= SECTIONS_PER_SIZE[size]; i++) {
     sections.push(section(rng, i));

@@ -1,10 +1,10 @@
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
+import type { SyntaxNode } from '@lezer/common';
 import {
   EditorSelection,
   Prec,
   StateEffect,
   StateField,
-  type EditorState,
   type Extension,
   type Range,
 } from '@codemirror/state';
@@ -33,6 +33,26 @@ import {
 //      user's cursor, sometimes turning a click into a micro-drag.
 //      Obsidian sidesteps this by delaying the reveal until the mouse
 //      has been released for a moment; we do the same via a freeze flag.
+
+export interface InlinePreviewConfig {
+  /**
+   * Called when the user plain-clicks a rendered link. Defaults to
+   * `window.open(url, '_blank', 'noopener,noreferrer')`. Consumers in
+   * platform-specific shells (Tauri, Electron, Capacitor) should pass
+   * their own opener so links route through the host's external-URL
+   * mechanism.
+   */
+  onLinkClick?: (url: string) => void;
+}
+
+function defaultOnLinkClick(url: string): void {
+  try {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  } catch {
+    // window.open can throw in sandboxed iframes etc. — silent failure
+    // is fine; the caller can supply an opener that handles this.
+  }
+}
 
 const FREEZE_TAIL_MS = 100;
 
@@ -132,9 +152,6 @@ const LINE_CLASS_BY_BLOCK: Record<string, string> = {
   FencedCode: 'cm-atomic-fenced-code',
 };
 
-// Node names whose characters we want invisible when the cursor isn't on
-// their line. Every hit contributes a Decoration.replace with no widget,
-// which hides the range without affecting layout.
 const HIDEABLE_SYNTAX = new Set([
   'HeaderMark',
   'EmphasisMark',
@@ -147,7 +164,6 @@ const HIDEABLE_SYNTAX = new Set([
   'QuoteMark',
 ]);
 
-// Inline content nodes that get a class applied unconditionally.
 const INLINE_MARK_CLASS: Record<string, string> = {
   StrongEmphasis: 'cm-atomic-strong',
   Emphasis: 'cm-atomic-em',
@@ -156,9 +172,6 @@ const INLINE_MARK_CLASS: Record<string, string> = {
   Link: 'cm-atomic-link',
 };
 
-// Substitute a `•` for the raw `-`/`*`/`+` marker on bullet-list items
-// when the line isn't active. We don't do this for ordered lists because
-// `1.`, `2.`, ... are numeric information the reader expects to see.
 class BulletWidget extends WidgetType {
   eq(): boolean {
     return true;
@@ -174,16 +187,8 @@ class BulletWidget extends WidgetType {
   }
 }
 
-// Single shared instance — WidgetType is stateless per decoration and CM6
-// compares with `eq()`, not reference equality.
 const BULLET_WIDGET = new BulletWidget();
 
-// GFM task-list checkbox. The raw `[ ]` / `[x]` in a list item gets
-// replaced by an interactive checkbox. Clicking the checkbox toggles the
-// source text between the two states without ever moving the cursor
-// into the line — `ignoreEvent` returns true for mouse events so CM6
-// doesn't try to place a selection there, and our own click handler does
-// the dispatch.
 class TaskCheckboxWidget extends WidgetType {
   constructor(readonly checked: boolean) {
     super();
@@ -200,16 +205,12 @@ class TaskCheckboxWidget extends WidgetType {
     input.className = 'cm-atomic-task-checkbox';
     input.setAttribute('contenteditable', 'false');
     input.addEventListener('mousedown', (e) => {
-      // Swallow the mousedown so the freeze plugin doesn't engage and
-      // CM6 doesn't start a selection at the checkbox.
       e.preventDefault();
       e.stopPropagation();
     });
     input.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // Re-resolve the checkbox's doc position at click time — the
-      // widget's DOM may have been reused across doc edits.
       const pos = view.posAtDOM(input);
       if (pos < 0) return;
       const current = view.state.doc.sliceString(pos, pos + 3);
@@ -220,8 +221,6 @@ class TaskCheckboxWidget extends WidgetType {
     return input;
   }
 
-  // Tell CM6 to leave mouse events on this widget alone — our own
-  // listener handles the toggle.
   ignoreEvent(event: Event): boolean {
     return event.type === 'mousedown' || event.type === 'click';
   }
@@ -233,35 +232,18 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   const ranges: Range<Decoration>[] = [];
 
   const activeLines = new Set<number>();
-  for (const r of state.selection.ranges) {
-    const firstLine = doc.lineAt(r.from).number;
-    const lastLine = doc.lineAt(r.to).number;
-    for (let n = firstLine; n <= lastLine; n++) activeLines.add(n);
+  if (view.hasFocus) {
+    for (const r of state.selection.ranges) {
+      const firstLine = doc.lineAt(r.from).number;
+      const lastLine = doc.lineAt(r.to).number;
+      for (let n = firstLine; n <= lastLine; n++) activeLines.add(n);
+    }
   }
 
-  // Push the incremental parser far enough to cover the viewport before
-  // we build decorations. Without this, on long docs the lezer tree may
-  // stop partway through, leaving everything past that point undecorated
-  // until some later event (like a click) nudges the parser forward.
-  // 50ms is a generous per-update budget — the user-perceivable effect
-  // is a tiny hitch when scrolling into fresh territory, not a hang.
   const tree = ensureSyntaxTree(state, view.viewport.to, 50) ?? syntaxTree(state);
-
-  // Scope both tree walks to the viewport. `iterate({ from, to })` still
-  // visits nodes that *overlap* the range, so a FencedCode that starts
-  // before the viewport and extends into it is still seen.
   const viewportFrom = view.viewport.from;
   const viewportTo = view.viewport.to;
 
-  // Pre-pass with two jobs:
-  //   1. Keep fence framing visible when editing a fenced code block.
-  //      If any line inside a FencedCode is active, pull every line of
-  //      the block into activeLines so the ``` fences stay visible
-  //      instead of folding back.
-  //   2. Index task-list items by line. We use this in the main pass to
-  //      suppress the bullet marker on task lines — the checkbox alone
-  //      conveys "this is a list item", so also rendering a `•` next to
-  //      it is visual noise.
   const taskMarkerByLine = new Map<number, number>();
   tree.iterate({
     from: viewportFrom,
@@ -308,24 +290,34 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
       if (HIDEABLE_SYNTAX.has(node.name) && node.from < node.to) {
         const lineNum = doc.lineAt(node.from).number;
         if (!activeLines.has(lineNum)) {
-          ranges.push(Decoration.replace({}).range(node.from, node.to));
+          let hideTo = node.to;
+          if (node.name === 'HeaderMark' || node.name === 'QuoteMark') {
+            while (hideTo < doc.length && doc.sliceString(hideTo, hideTo + 1) === ' ') {
+              hideTo++;
+            }
+          }
+          ranges.push(Decoration.replace({}).range(node.from, hideTo));
         }
       }
 
       if (node.name === 'ListMark' && node.from < node.to) {
-        const lineNum = doc.lineAt(node.from).number;
+        const line = doc.lineAt(node.from);
+        const lineNum = line.number;
         const taskFrom = taskMarkerByLine.get(lineNum);
+
+        const rawIndent = node.from - line.from;
+        if (rawIndent >= 2) {
+          const depth = Math.floor(rawIndent / 2);
+          ranges.push(
+            Decoration.line({
+              attributes: { style: `padding-left: ${depth * 0.6}em` },
+            }).range(line.from),
+          );
+        }
+
         if (taskFrom !== undefined) {
-          // Task-list item: hide the `- ` (and any whitespace up to the
-          // TaskMarker) so only the checkbox shows. Rendering both a
-          // bullet and a checkbox would be redundant.
           ranges.push(Decoration.replace({}).range(node.from, taskFrom));
         } else {
-          // Regular bullet list: render the marker as `•`, unconditional
-          // of active state. Keeps the visual stable when the cursor
-          // enters or leaves a list item, and the reader never needs to
-          // see the raw `-`/`*`/`+`. Ordered markers (`1.`, `2.`, …)
-          // stay as-is — the numbers are information.
           const markText = doc.sliceString(node.from, node.to);
           if (markText === '-' || markText === '*' || markText === '+') {
             ranges.push(
@@ -335,10 +327,39 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         }
       }
 
+      if (node.name === 'TableHeader' || node.name === 'TableRow') {
+        const startLine = doc.lineAt(node.from);
+        const endLine = doc.lineAt(node.to);
+        for (let n = startLine.number; n <= endLine.number; n++) {
+          const line = doc.line(n);
+          ranges.push(Decoration.line({ class: 'cm-atomic-table-row' }).range(line.from));
+          if (node.name === 'TableHeader') {
+            ranges.push(
+              Decoration.line({ class: 'cm-atomic-table-header' }).range(line.from),
+            );
+          }
+        }
+      }
+
+      if (node.name === 'TableDelimiter' && node.from < node.to) {
+        const lineNum = doc.lineAt(node.from).number;
+        const isActive = activeLines.has(lineNum);
+        if (node.to - node.from === 1) {
+          if (!isActive) {
+            ranges.push(Decoration.replace({}).range(node.from, node.to));
+          }
+        } else {
+          const line = doc.lineAt(node.from);
+          ranges.push(
+            Decoration.line({ class: 'cm-atomic-table-divider' }).range(line.from),
+          );
+          if (!isActive) {
+            ranges.push(Decoration.replace({}).range(node.from, node.to));
+          }
+        }
+      }
+
       if (node.name === 'TaskMarker' && node.from < node.to) {
-        // `[ ]` / `[x]` → rendered checkbox. Always-on (not conditional
-        // on active line) so the user can click to toggle without having
-        // to enter the line first.
         const markText = doc.sliceString(node.from, node.to);
         const checked = /\[x\]/i.test(markText);
         ranges.push(
@@ -348,8 +369,6 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
           ),
         );
         if (checked) {
-          // Strike through the rest of the item's line to make "done"
-          // visually obvious.
           const lineNum = doc.lineAt(node.from).number;
           const line = doc.line(lineNum);
           ranges.push(
@@ -363,11 +382,6 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
   return Decoration.set(ranges, true);
 }
 
-// Decoration source. A ViewPlugin (not a StateField) so we can see
-// `view.viewport` and scope both syntax-tree iteration and decoration
-// emission to what's actually visible. The StateField approach doesn't
-// have access to the viewport, which is why content past the initial
-// parse window appeared unrendered until a click nudged an update.
 const inlinePreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
@@ -381,16 +395,14 @@ const inlinePreviewPlugin = ViewPlugin.fromClass(
       const nextFrozen = update.state.field(previewFrozenField);
       const justUnfroze = prevFrozen && !nextFrozen;
 
-      // While frozen, keep whatever was last shown. This is what prevents
-      // mousedown-triggered selection changes from revealing syntax
-      // tokens mid-click and shifting layout under the cursor.
       if (nextFrozen && !justUnfroze) return;
 
       if (
         justUnfroze ||
         update.docChanged ||
         update.viewportChanged ||
-        update.selectionSet
+        update.selectionSet ||
+        update.focusChanged
       ) {
         this.decorations = buildInlineDecorations(update.view);
       }
@@ -418,8 +430,6 @@ function insertTightListItem(view: EditorView): boolean {
   const from = sel.from;
   const line = state.doc.lineAt(from);
 
-  // Confirm we're inside a BulletList by walking ancestors. Without this
-  // the handler would hijack Enter on every line.
   const tree = syntaxTree(state);
   let cursor = tree.resolveInner(from, -1).cursor();
   let inBulletList = false;
@@ -432,9 +442,6 @@ function insertTightListItem(view: EditorView): boolean {
   }
   if (!inBulletList) return false;
 
-  // The actual line text — we use its prefix to recover the indent,
-  // bullet marker, and whitespace, so the continuation matches the
-  // user's preferred style.
   const lineText = state.doc.sliceString(line.from, line.to);
   const prefix = lineText.match(/^(\s*)([-*+])(\s+)/);
   if (!prefix) return false;
@@ -442,22 +449,26 @@ function insertTightListItem(view: EditorView): boolean {
   const [whole, indent, marker] = prefix;
   const rest = lineText.slice(whole.length);
 
-  // Detect a GFM task-list item so we can propagate `[ ]` to the new
-  // line (an Obsidian-style ergonomic — Enter on a task creates a fresh
-  // unchecked task, not a plain bullet). A completed `[x]` still
-  // produces a fresh unchecked box.
   const taskMatch = rest.match(/^(\[[ xX]\])(\s*)/);
   const taskPrefixLen = taskMatch ? taskMatch[0].length : 0;
   const contentAfterPrefix = rest.slice(taskPrefixLen);
 
-  // Empty continuation — user pressed Enter on a bullet (or empty task)
-  // with no content. Exit the list: replace the line with just its
-  // indent so the cursor lands on a plain blank line.
   if (!contentAfterPrefix.trim()) {
-    view.dispatch({
-      changes: { from: line.from, to: line.to, insert: indent },
-      selection: EditorSelection.cursor(line.from + indent.length),
-    });
+    const depth = Math.floor(indent.length / 2);
+    if (depth >= 1) {
+      const outerIndent = indent.slice(0, indent.length - 2);
+      const continuation = taskMatch ? `${marker} [ ] ` : `${marker} `;
+      const replacement = `${outerIndent}${continuation}`;
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: replacement },
+        selection: EditorSelection.cursor(line.from + replacement.length),
+      });
+    } else {
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: '' },
+        selection: EditorSelection.cursor(line.from),
+      });
+    }
     return true;
   }
 
@@ -470,12 +481,55 @@ function insertTightListItem(view: EditorView): boolean {
   return true;
 }
 
-export const inlinePreviewExtension: Extension = [
-  previewFrozenField,
-  inlinePreviewPlugin,
-  freezeMousePlugin,
-  // Prec.highest to beat @codemirror/lang-markdown's own Enter handler,
-  // which is registered internally by the `markdown()` extension (not
-  // just via the exported markdownKeymap) and otherwise wins precedence.
-  Prec.highest(keymap.of([{ key: 'Enter', run: insertTightListItem }])),
-];
+function makeLinkClickHandler(onLinkClick: (url: string) => void): Extension {
+  return EditorView.domEventHandlers({
+    click: (event, view) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+      if (event.button !== 0) return false;
+      const target = event.target;
+      if (!(target instanceof Element)) return false;
+      const linkEl = target.closest<HTMLElement>('.cm-atomic-link');
+      if (!linkEl) return false;
+
+      const pos = view.posAtDOM(linkEl);
+      if (pos < 0) return false;
+
+      const tree = syntaxTree(view.state);
+      let node: SyntaxNode | null = tree.resolveInner(pos, 1);
+      while (node && node.name !== 'Link') node = node.parent;
+      if (!node) return false;
+      const urlNode = node.getChild('URL');
+      if (!urlNode) return false;
+
+      const url = view.state.doc.sliceString(urlNode.from, urlNode.to);
+      if (!url) return false;
+
+      event.preventDefault();
+      event.stopPropagation();
+      onLinkClick(url);
+      return true;
+    },
+  });
+}
+
+/**
+ * Assemble the inline-preview extension set. Call once per editor and
+ * include the result in your EditorState `extensions` list. Accepts an
+ * `onLinkClick` callback so consumers can route link opens through
+ * their platform's external-URL mechanism (Tauri IPC, Capacitor
+ * browser, etc.) instead of the default `window.open`.
+ */
+export function inlinePreview(config: InlinePreviewConfig = {}): Extension {
+  const { onLinkClick = defaultOnLinkClick } = config;
+  return [
+    previewFrozenField,
+    inlinePreviewPlugin,
+    freezeMousePlugin,
+    makeLinkClickHandler(onLinkClick),
+    // Prec.highest to beat @codemirror/lang-markdown's own Enter
+    // handler, which is registered internally by the `markdown()`
+    // extension (not just via the exported markdownKeymap) and
+    // otherwise wins precedence.
+    Prec.highest(keymap.of([{ key: 'Enter', run: insertTightListItem }])),
+  ];
+}

@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AtomicCodeMirrorEditor } from '@atomic/editor';
+import '@atomic/editor/styles.css';
 import { useFont, useTheme } from '../../hooks';
-import { AtomicCodeMirrorEditor } from '../editor/AtomicCodeMirrorEditor';
+import { useSettingsStore } from '../../stores/settings';
+import { openExternalUrl } from '../../lib/platform';
 import { SAMPLE_SIZES, type SampleSize, generateSampleMarkdown } from './sample-content';
 
 function formatBytes(chars: number): string {
@@ -13,6 +16,20 @@ function formatBytes(chars: number): string {
 export function EditorHarnessPage() {
   useTheme();
   useFont();
+
+  // The theme/font hooks read from the settings store, but the store is
+  // lazy — it's only populated when the SettingsModal opens. The
+  // harness lives outside the normal Layout, so without this fetch it
+  // would always show the built-in defaults regardless of what the
+  // user selected.
+  const fetchSettings = useSettingsStore((s) => s.fetchSettings);
+  useEffect(() => {
+    fetchSettings().catch(() => {
+      // Transport may be disconnected (web mode without saved server
+      // config). The defaults from useFont/useTheme are fine in that
+      // case — no need to surface the failure.
+    });
+  }, [fetchSettings]);
 
   const [size, setSize] = useState<SampleSize>('100 pages');
   const markdownSource = useMemo(() => generateSampleMarkdown(size), [size]);
@@ -81,6 +98,9 @@ export function EditorHarnessPage() {
               key={size}
               documentId={`harness-${size}`}
               markdownSource={markdownSource}
+              onLinkClick={(url) => {
+                void openExternalUrl(url);
+              }}
             />
           </div>
         </div>

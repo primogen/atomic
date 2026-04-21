@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.24.1",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "postinstall": "patch-package --error-on-fail",
     "dev": "vite",

@@ -169,6 +169,16 @@ async function probeCursorPingPong(page) {
   // Bounce the cursor between an H2 and a plain paragraph line a few
   // times. Each cursor move swaps which line is "active" and triggers
   // a decoration rebuild; if the swap changes heights, CLS spikes.
+  //
+  // Earlier probes may have scrolled the viewport far from the top
+  // (task-list probe ctrl+End's to doc end). CM6 virtualizes, so lines
+  // outside the viewport aren't in the DOM and locators can't find
+  // them. Reset scroll before we target.
+  await page.locator('.cm-scroller').evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await page.waitForTimeout(250);
+
   const h2 = page.locator('.cm-line.cm-atomic-h2').first();
   const para = page.locator('.cm-line:not([class*="cm-atomic"])').nth(4);
   if ((await h2.count()) === 0 || (await para.count()) === 0) {
@@ -197,6 +207,25 @@ async function probeCursorPingPong(page) {
     `total=${cls.total.toFixed(3)} shifts=${cls.count}${topSrc ? ` sources=${topSrc}` : ''}`,
   );
   return cls;
+}
+
+async function probeColdLoadH1Hidden(page) {
+  // On mount with no focus, the H1 should read as rendered (no `# `
+  // prefix visible). CM6's default selection is cursor(0), which
+  // would otherwise make the first line "active" even before the
+  // user touches the editor.
+  const h1 = page.locator('.cm-line.cm-atomic-h1').first();
+  if ((await h1.count()) === 0) {
+    record('cold load: H1 syntax hidden', 'fail', 'no H1 line');
+    return;
+  }
+  const text = (await h1.textContent()) ?? '';
+  const hidden = !text.trim().startsWith('#');
+  record(
+    'cold load: H1 syntax hidden',
+    hidden ? 'pass' : 'fail',
+    `text=${JSON.stringify(text.slice(0, 40))}`,
+  );
 }
 
 async function probeClickFreeze(page) {
@@ -395,6 +424,57 @@ async function probeNewBulletList(page) {
     '21-list-after-h2.png',
   );
 
+}
+
+async function probeNestedListExit(page) {
+  // Regression guard: pressing Enter on an empty nested list item
+  // should drop one level of indent per press, ending with a clean
+  // unindented cursor — no orphan whitespace from the item's indent.
+  const content = page.locator('.cm-content').first();
+  await content.click();
+  await page.waitForTimeout(180);
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+
+  const uniq = `NEST_${Date.now().toString(36).slice(-4)}`;
+  // Build a two-level list: `- outer` + nested `  - inner`.
+  await page.keyboard.type(`- outer-${uniq}`);
+  await page.keyboard.press('Enter');
+  // `  - ` prefix — use the auto-continuation from Enter on outer,
+  // then indent manually by typing two spaces + the marker. Explicit
+  // control makes the test less brittle to auto-indent behavior.
+  await page.keyboard.type(`  - inner-${uniq}`);
+  await page.waitForTimeout(200);
+
+  // Enter 1: continues with `  - ` (empty nested item).
+  await page.keyboard.press('Enter');
+  // Enter 2: pop to outer level → line becomes `- `.
+  await page.keyboard.press('Enter');
+  // Enter 3: top-level empty → line fully cleared.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(250);
+
+  // Read the line text where the cursor is now. The line should be
+  // empty (no leading whitespace). Playwright's selection API gives
+  // us the DOM anchor; walk up to the containing .cm-line.
+  const exitLineText = await page.evaluate(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    let node = sel.anchorNode;
+    while (node && !(node instanceof Element && node.classList.contains('cm-line'))) {
+      node = node.parentNode;
+    }
+    return node ? node.textContent ?? '' : null;
+  });
+
+  const status =
+    exitLineText !== null && !/^\s/.test(exitLineText) ? 'pass' : 'fail';
+  record(
+    'nested list: clean exit after 3 Enters',
+    status,
+    `exit line text = ${JSON.stringify(exitLineText)}`,
+  );
 }
 
 async function probeTaskList(page) {
@@ -645,9 +725,12 @@ async function run() {
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, '01-initial.png'), fullPage: false });
 
     await probeIdle(page);
+    // Must run before any probe that focuses/clicks the editor.
+    await probeColdLoadH1Hidden(page);
     await probeClickFreeze(page);
     await probeFenceVisibility(page);
     await probeNewBulletList(page);
+    await probeNestedListExit(page);
     await probeTaskList(page);
     await probeCursorPingPong(page);
     await probeTyping(page);

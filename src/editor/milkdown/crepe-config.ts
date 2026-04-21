@@ -7,7 +7,7 @@ import { listItem } from '@milkdown/crepe/feature/list-item';
 import { placeholder } from '@milkdown/crepe/feature/placeholder';
 import { table } from '@milkdown/crepe/feature/table';
 
-import { ATOMIC_CODE_LANGUAGES } from '../codemirror/code-languages';
+import { ATOMIC_CODE_LANGUAGES } from '@atomic/editor';
 
 // We import Crepe features individually instead of using the batteries-included
 // `Crepe` class, because `@milkdown/crepe`'s root module statically imports
