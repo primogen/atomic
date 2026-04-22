@@ -4,38 +4,21 @@ import {
   StreamLanguage,
   type StreamParser,
 } from '@codemirror/language';
-import { oneDark } from '@codemirror/theme-one-dark';
-import { CrepeBuilder } from '@milkdown/crepe/builder';
-import { blockEdit } from '@milkdown/crepe/feature/block-edit';
-import { codeMirror } from '@milkdown/crepe/feature/code-mirror';
-import { imageBlock } from '@milkdown/crepe/feature/image-block';
-import { listItem } from '@milkdown/crepe/feature/list-item';
-import { placeholder } from '@milkdown/crepe/feature/placeholder';
-import { table } from '@milkdown/crepe/feature/table';
 
-// We import Crepe features individually instead of using the batteries-included
-// `Crepe` class, because `@milkdown/crepe`'s root module statically imports
-// every feature (katex, the toolbar's katex, prosemirror-virtual-cursor, …).
-// Runtime `features: { [X]: false }` toggles can't tree-shake those — only
-// omitting the import from the module graph does. Dropping `latex` + `toolbar`
-// is what pulled the editor chunk under the workbox precache ceiling.
+// Curated list of languages offered for fenced code blocks. Each `load()` is a
+// dynamic import so Rollup splits the grammar into its own lazy chunk — users
+// only download the ones they actually use.
 //
-// If you need a feature back, add its `@milkdown/crepe/feature/<name>` import
-// and a matching `.addFeature(...)` call below.
+// We deliberately avoid `@codemirror/language-data`'s full catalog (50+
+// grammars, ~1 MB) and ship only what we write. To add a language: install
+// `@codemirror/lang-<name>` (or pull a stream parser from
+// `@codemirror/legacy-modes`) and append an entry here.
 
 function legacy(parser: StreamParser<unknown>): LanguageSupport {
   return new LanguageSupport(StreamLanguage.define(parser));
 }
 
-// Curated list of languages we want in the code-block language selector.
-// Each `load()` is a dynamic import, which Rollup splits into its own lazy
-// chunk — so grammars download only when a user picks that language.
-//
-// We avoid `@codemirror/language-data`'s full catalog (50+ languages, ~1 MB
-// of grammars) and ship only what we actually write. Add to this list if
-// you want another language; `npm install @codemirror/lang-<name>` (or pull
-// a stream parser from `@codemirror/legacy-modes`) and add an entry.
-const CODE_BLOCK_LANGUAGES: LanguageDescription[] = [
+export const ATOMIC_CODE_LANGUAGES: LanguageDescription[] = [
   LanguageDescription.of({
     name: 'JavaScript',
     alias: ['js', 'jsx'],
@@ -154,32 +137,3 @@ const CODE_BLOCK_LANGUAGES: LanguageDescription[] = [
     load: () => import('@codemirror/lang-markdown').then((m) => m.markdown()),
   }),
 ];
-
-export type AtomicCrepeOptions = {
-  root: HTMLElement;
-  defaultValue?: string;
-  placeholderText?: string;
-  imageBlockUploadPlaceholder?: string;
-};
-
-export function buildAtomicCrepe(options: AtomicCrepeOptions): CrepeBuilder {
-  const {
-    root,
-    defaultValue = '',
-    placeholderText = '',
-    imageBlockUploadPlaceholder = 'paste link',
-  } = options;
-
-  return new CrepeBuilder({ root, defaultValue })
-    .addFeature(codeMirror, { languages: CODE_BLOCK_LANGUAGES, theme: oneDark })
-    .addFeature(listItem)
-    .addFeature(imageBlock, {
-      inlineUploadButton: '',
-      inlineUploadPlaceholderText: imageBlockUploadPlaceholder,
-      blockUploadButton: '',
-      blockUploadPlaceholderText: imageBlockUploadPlaceholder,
-    })
-    .addFeature(blockEdit)
-    .addFeature(placeholder, { text: placeholderText })
-    .addFeature(table);
-}
