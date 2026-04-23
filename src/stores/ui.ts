@@ -71,6 +71,8 @@ interface UIStore {
   // Command palette state
   commandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
+  searchPaletteOpen: boolean;
+  searchPaletteInitialQuery: string;
   // Reader theme
   readerTheme: 'light' | 'dark';
   // Actions
@@ -114,6 +116,9 @@ interface UIStore {
   openCommandPalette: (initialQuery?: string) => void;
   closeCommandPalette: () => void;
   toggleCommandPalette: () => void;
+  openSearchPalette: (initialQuery?: string) => void;
+  closeSearchPalette: () => void;
+  toggleSearchPalette: () => void;
   setReaderTheme: (theme: 'light' | 'dark') => void;
   toggleReaderTheme: () => void;
 }
@@ -160,6 +165,8 @@ export const useUIStore = create<UIStore>()(
       serverConnected: false,
       commandPaletteOpen: false,
       commandPaletteInitialQuery: '',
+      searchPaletteOpen: false,
+      searchPaletteInitialQuery: '',
       readerTheme: 'dark' as 'light' | 'dark',
 
       setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open, leftPanelTransitionMode: 'manual' }),
@@ -466,16 +473,37 @@ export const useUIStore = create<UIStore>()(
       // Command palette actions
       openCommandPalette: (initialQuery?: string) => set({
         commandPaletteOpen: true,
-        commandPaletteInitialQuery: initialQuery || ''
+        commandPaletteInitialQuery: initialQuery || '',
+        searchPaletteOpen: false,
+        searchPaletteInitialQuery: '',
       }),
       closeCommandPalette: () => set({
         commandPaletteOpen: false,
-        commandPaletteInitialQuery: ''
+        commandPaletteInitialQuery: '',
       }),
       toggleCommandPalette: () =>
         set((state) => ({
           commandPaletteOpen: !state.commandPaletteOpen,
-          commandPaletteInitialQuery: state.commandPaletteOpen ? '' : state.commandPaletteInitialQuery
+          commandPaletteInitialQuery: state.commandPaletteOpen ? '' : state.commandPaletteInitialQuery,
+          searchPaletteOpen: state.commandPaletteOpen ? state.searchPaletteOpen : false,
+          searchPaletteInitialQuery: state.commandPaletteOpen ? state.searchPaletteInitialQuery : '',
+        })),
+      openSearchPalette: (initialQuery?: string) => set({
+        searchPaletteOpen: true,
+        searchPaletteInitialQuery: initialQuery || '',
+        commandPaletteOpen: false,
+        commandPaletteInitialQuery: '',
+      }),
+      closeSearchPalette: () => set({
+        searchPaletteOpen: false,
+        searchPaletteInitialQuery: '',
+      }),
+      toggleSearchPalette: () =>
+        set((state) => ({
+          searchPaletteOpen: !state.searchPaletteOpen,
+          searchPaletteInitialQuery: state.searchPaletteOpen ? '' : state.searchPaletteInitialQuery,
+          commandPaletteOpen: state.searchPaletteOpen ? state.commandPaletteOpen : false,
+          commandPaletteInitialQuery: state.searchPaletteOpen ? state.commandPaletteInitialQuery : '',
         })),
 
       setReaderTheme: (theme: 'light' | 'dark') => set({ readerTheme: theme }),

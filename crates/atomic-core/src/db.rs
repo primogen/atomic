@@ -446,9 +446,8 @@ impl Database {
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let mut update_stmt = conn.prepare(
-                    "UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3",
-                )?;
+                let mut update_stmt =
+                    conn.prepare("UPDATE atoms SET title = ?1, snippet = ?2 WHERE id = ?3")?;
                 for (id, content) in &atoms {
                     let (title, snippet) = crate::extract_title_and_snippet(content, 300);
                     update_stmt.execute(rusqlite::params![title, snippet, id])?;
@@ -733,8 +732,7 @@ impl Database {
             )
             .unwrap_or_default();
 
-        if vec_tags_sql.is_empty()
-            || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
+        if vec_tags_sql.is_empty() || !vec_tags_sql.contains(&format!("float[{}]", vec_chunks_dim))
         {
             conn.execute("DROP TABLE IF EXISTS vec_tags", []).ok();
             conn.execute("DELETE FROM tag_embeddings", []).ok();
@@ -776,6 +774,61 @@ impl Database {
             )?;
             conn.execute(
                 "INSERT INTO atom_chunks_fts(atom_chunks_fts) VALUES('rebuild')",
+                [],
+            )?;
+        }
+
+        let wiki_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='wiki_articles_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if wiki_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE wiki_articles_fts USING fts5(
+                    id UNINDEXED,
+                    tag_id UNINDEXED,
+                    tag_name,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM wiki_articles_fts", [])?;
+            conn.execute(
+                "INSERT INTO wiki_articles_fts(id, tag_id, tag_name, content)
+                 SELECT w.id, w.tag_id, t.name, w.content
+                 FROM wiki_articles w
+                 JOIN tags t ON t.id = w.tag_id",
+                [],
+            )?;
+        }
+
+        let chat_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_messages_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        if chat_fts_sql.is_empty() {
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
+                    id UNINDEXED,
+                    conversation_id UNINDEXED,
+                    content
+                );
+                "#,
+            )?;
+            conn.execute("DELETE FROM chat_messages_fts", [])?;
+            conn.execute(
+                "INSERT INTO chat_messages_fts(id, conversation_id, content)
+                 SELECT id, conversation_id, content FROM chat_messages",
                 [],
             )?;
         }
@@ -827,16 +880,10 @@ pub fn recreate_vec_chunks_with_dimension(
     conn.execute(&create_sql, [])?;
 
     // Reset ONLY embedding status to pending
-    conn.execute(
-        "UPDATE atoms SET embedding_status = 'pending'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET embedding_status = 'pending'", [])?;
 
     // Set tagging_status to 'skipped' - existing tags are preserved
-    conn.execute(
-        "UPDATE atoms SET tagging_status = 'skipped'",
-        [],
-    )?;
+    conn.execute("UPDATE atoms SET tagging_status = 'skipped'", [])?;
 
     // Clear all existing chunk data
     conn.execute("DELETE FROM atom_chunks", [])?;
@@ -875,7 +922,11 @@ mod tests {
         // Verify we got a valid database
         let conn = db.conn.lock().unwrap();
         let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         // Should have at least our core tables (16 regular + 2 virtual)
