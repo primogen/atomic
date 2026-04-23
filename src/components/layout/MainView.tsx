@@ -633,7 +633,11 @@ export function MainView() {
         ) : readerState.atomId ? (
           <AtomReader atomId={readerState.atomId} highlightText={readerState.highlightText} initialEditing={readerState.editing} />
         ) : wikiReaderState.tagId && wikiReaderState.tagName ? (
-          <WikiReader tagId={wikiReaderState.tagId} tagName={wikiReaderState.tagName} />
+          <WikiReader
+            tagId={wikiReaderState.tagId}
+            tagName={wikiReaderState.tagName}
+            highlightText={wikiReaderState.highlightText}
+          />
         ) : viewMode === 'dashboard' ? (
           <DashboardView />
         ) : viewMode === 'wiki' ? (

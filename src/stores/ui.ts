@@ -30,12 +30,13 @@ interface ReaderState {
 interface WikiReaderState {
   tagId: string | null;
   tagName: string | null;
+  highlightText: string | null;
 }
 
 export type OverlayNavEntry =
   | { type: 'reader'; atomId: string; highlightText?: string | null }
   | { type: 'graph'; atomId: string }
-  | { type: 'wiki'; tagId: string; tagName: string }
+  | { type: 'wiki'; tagId: string; tagName: string; highlightText?: string | null }
 
 export interface OverlayNav {
   stack: OverlayNavEntry[];
@@ -88,7 +89,7 @@ interface UIStore {
   openReaderEditing: (atomId: string) => void;
   setReaderEditState: (editing: boolean, saveStatus?: 'idle' | 'saving' | 'saved' | 'error') => void;
   closeReader: () => void;
-  openWikiReader: (tagId: string, tagName: string) => void;
+  openWikiReader: (tagId: string, tagName: string, highlightText?: string) => void;
   overlayNavigate: (entry: OverlayNavEntry) => void;
   overlayBack: () => void;
   overlayForward: () => void;
@@ -137,6 +138,7 @@ export const useUIStore = create<UIStore>()(
       wikiReaderState: {
         tagId: null,
         tagName: null,
+        highlightText: null,
       },
       overlayNav: {
         stack: [],
@@ -215,7 +217,7 @@ export const useUIStore = create<UIStore>()(
           stack.push(entry);
           return {
             readerState: { atomId, highlightText: highlightText || null, editing: false, saveStatus: 'idle' as const },
-            wikiReaderState: { tagId: null, tagName: null },
+            wikiReaderState: { tagId: null, tagName: null, highlightText: null },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
             ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
@@ -232,7 +234,7 @@ export const useUIStore = create<UIStore>()(
           stack.push(entry);
           return {
             readerState: { atomId, highlightText: null, editing: true, saveStatus: 'idle' as const },
-            wikiReaderState: { tagId: null, tagName: null },
+            wikiReaderState: { tagId: null, tagName: null, highlightText: null },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
             ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
@@ -249,21 +251,26 @@ export const useUIStore = create<UIStore>()(
       closeReader: () => {
         set({
           readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
-          wikiReaderState: { tagId: null, tagName: null },
+          wikiReaderState: { tagId: null, tagName: null, highlightText: null },
           overlayNav: { stack: [], index: -1 },
         });
         const state = get();
         navigateBack(viewPath(state.viewMode, state.selectedTagId));
       },
 
-      openWikiReader: (tagId: string, tagName: string) => {
-        const entry: OverlayNavEntry = { type: 'wiki', tagId, tagName };
+      openWikiReader: (tagId: string, tagName: string, highlightText?: string) => {
+        const entry: OverlayNavEntry = {
+          type: 'wiki',
+          tagId,
+          tagName,
+          highlightText: highlightText ?? null,
+        };
         set((state) => {
           const stack = state.overlayNav.stack.slice(0, state.overlayNav.index + 1);
           const isFirstOpen = state.overlayNav.index === -1;
           stack.push(entry);
           return {
-            wikiReaderState: { tagId, tagName },
+            wikiReaderState: { tagId, tagName, highlightText: highlightText ?? null },
             readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
             overlayNav: { stack, index: stack.length - 1 },
             localGraph: { ...state.localGraph, isOpen: false },
@@ -283,21 +290,25 @@ export const useUIStore = create<UIStore>()(
             return {
               overlayNav: { stack, index },
               readerState: { atomId: entry.atomId, highlightText: entry.highlightText || null, editing: false, saveStatus: 'idle' as const },
-              wikiReaderState: { tagId: null, tagName: null },
+              wikiReaderState: { tagId: null, tagName: null, highlightText: null },
               localGraph: { ...state.localGraph, isOpen: false },
             };
           } else if (entry.type === 'wiki') {
             return {
               overlayNav: { stack, index },
               readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
-              wikiReaderState: { tagId: entry.tagId, tagName: entry.tagName },
+              wikiReaderState: {
+                tagId: entry.tagId,
+                tagName: entry.tagName,
+                highlightText: entry.highlightText ?? null,
+              },
               localGraph: { ...state.localGraph, isOpen: false },
             };
           } else {
             return {
               overlayNav: { stack, index },
               readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
-              wikiReaderState: { tagId: null, tagName: null },
+              wikiReaderState: { tagId: null, tagName: null, highlightText: null },
               localGraph: { isOpen: true, centerAtomId: entry.atomId, depth: 1, navigationHistory: [entry.atomId] },
             };
           }
@@ -417,7 +428,7 @@ export const useUIStore = create<UIStore>()(
               navigationHistory: [atomId],
             },
             readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' as const },
-            wikiReaderState: { tagId: null, tagName: null },
+            wikiReaderState: { tagId: null, tagName: null, highlightText: null },
             overlayNav: { stack, index: stack.length - 1 },
             ...(isFirstOpen && state.leftPanelOpen ? { leftPanelOpen: false, leftPanelOpenBeforeReader: true, leftPanelTransitionMode: 'overlay' as const } : {}),
           };

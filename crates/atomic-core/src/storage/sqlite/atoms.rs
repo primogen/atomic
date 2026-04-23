@@ -12,6 +12,28 @@ use crate::{
 use async_trait::async_trait;
 use rusqlite::OptionalExtension;
 
+/// Insert the FTS row for an atom. Call after the corresponding row has been
+/// inserted into `atoms` so the external-content select finds the current state.
+fn atoms_fts_insert(conn: &rusqlite::Connection, atom_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO atoms_fts(rowid, id, content)
+         SELECT rowid, id, content FROM atoms WHERE id = ?1",
+        [atom_id],
+    )?;
+    Ok(())
+}
+
+/// Remove the FTS row for an atom. Call BEFORE updating or deleting the atoms
+/// row so FTS5's external-content delete sees the *current* indexed content.
+fn atoms_fts_delete(conn: &rusqlite::Connection, atom_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO atoms_fts(atoms_fts, rowid, id, content)
+         SELECT 'delete', rowid, id, content FROM atoms WHERE id = ?1",
+        [atom_id],
+    )?;
+    Ok(())
+}
+
 impl SqliteStorage {
     pub(crate) fn count_atoms_impl(&self) -> StorageResult<i32> {
         let conn = self.db.read_conn()?;
@@ -100,6 +122,8 @@ impl SqliteStorage {
                     ),
                 )?;
 
+                atoms_fts_insert(&conn, id)?;
+
                 for tag_id in &request.tag_ids {
                     conn.execute(
                         "INSERT INTO atom_tags (atom_id, tag_id) VALUES (?1, ?2)",
@@ -178,6 +202,11 @@ impl SqliteStorage {
                         &snippet,
                     ),
                 ) {
+                    conn.execute_batch("ROLLBACK")?;
+                    return Err(AtomicCoreError::Database(e));
+                }
+
+                if let Err(e) = atoms_fts_insert(&conn, id) {
                     conn.execute_batch("ROLLBACK")?;
                     return Err(AtomicCoreError::Database(e));
                 }
@@ -279,6 +308,7 @@ impl SqliteStorage {
                 };
 
                 if reset_embedding_status {
+                    atoms_fts_delete(&conn, id)?;
                     conn.execute(
                         "UPDATE atoms
                          SET content = ?1,
@@ -306,8 +336,10 @@ impl SqliteStorage {
                             id,
                         ),
                     )?;
+                    atoms_fts_insert(&conn, id)?;
                 } else {
                     if content_changed {
+                        atoms_fts_delete(&conn, id)?;
                         conn.execute(
                             "UPDATE atoms
                              SET content = ?1,
@@ -335,7 +367,9 @@ impl SqliteStorage {
                                 id,
                             ),
                         )?;
+                        atoms_fts_insert(&conn, id)?;
                     } else {
+                        // Content unchanged — FTS stays in sync without a resync.
                         conn.execute(
                             "UPDATE atoms SET content = ?1, source_url = ?2, source = ?3, published_at = ?4, updated_at = ?5,
                              title = ?6, snippet = ?7
@@ -408,6 +442,9 @@ impl SqliteStorage {
         // Explicit delete from atom_tags so the trigger decrements tags.atom_count.
         // (FK CASCADE is off, so this won't happen automatically.)
         conn.execute("DELETE FROM atom_tags WHERE atom_id = ?1", [id])?;
+        // Remove FTS entry *before* deleting the atoms row so external-content
+        // delete sees the live content.
+        atoms_fts_delete(&conn, id)?;
         conn.execute("DELETE FROM atoms WHERE id = ?1", [id])?;
 
         Ok(())

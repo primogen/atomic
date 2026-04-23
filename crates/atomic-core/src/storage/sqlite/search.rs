@@ -93,6 +93,9 @@ impl SqliteStorage {
                     similarity_score: similarity,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
+                    match_snippet: None,
+                    match_offsets: None,
+                    match_count: None,
                 });
             }
         }
@@ -113,66 +116,56 @@ impl SqliteStorage {
         if escaped_query.is_empty() {
             return Ok(Vec::new());
         }
-        let fetch_limit = limit * 5;
+        let fetch_limit = limit * 2;
 
-        let raw_results: Vec<(String, String, String, i32, f64)> =
-            fts_search_with_cutoff(&conn, &escaped_query, fetch_limit, created_after)?;
+        // Query atom-level FTS. Each row is already one atom — no chunk dedupe
+        // needed. `highlight` wraps every match in the full atom content so we
+        // can parse out per-match byte offsets for the reader's cycle flow.
+        let raw_results: Vec<(String, f64, String, String)> =
+            atom_fts_search_with_cutoff(&conn, &escaped_query, fetch_limit, created_after)?;
 
         // Apply tag scope filter if specified
-        let scope_tag_ids: Vec<String> = tag_id.map(|t| vec![t.to_string()]).unwrap_or_default();
-        let filtered = if scope_tag_ids.is_empty() {
-            raw_results
-        } else {
-            let candidate_atom_ids: Vec<&str> = raw_results.iter().map(|r| r.1.as_str()).collect();
+        let filtered = if let Some(tid) = tag_id {
+            let scope_tag_ids = vec![tid.to_string()];
+            let candidate_atom_ids: Vec<&str> = raw_results.iter().map(|r| r.0.as_str()).collect();
             let matching = batch_atoms_with_scope_tags(&conn, &candidate_atom_ids, &scope_tag_ids)?;
             raw_results
                 .into_iter()
-                .filter(|r| matching.contains(r.1.as_str()))
-                .collect()
+                .filter(|r| matching.contains(r.0.as_str()))
+                .collect::<Vec<_>>()
+        } else {
+            raw_results
         };
 
-        // Deduplicate by atom_id, keeping best score
-        let mut atom_best: HashMap<String, (f32, String, i32)> = HashMap::new();
-        for (_chunk_id, atom_id, content, chunk_index, bm25_score) in &filtered {
-            let score = normalize_bm25_score(*bm25_score);
-            let entry = atom_best.entry(atom_id.clone());
-            match entry {
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if score > e.get().0 {
-                        e.insert((score, content.clone(), *chunk_index));
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert((score, content.clone(), *chunk_index));
-                }
-            }
-        }
-
-        // Sort and limit
-        let mut deduped: Vec<(String, f32, String, i32)> = atom_best
-            .into_iter()
-            .map(|(atom_id, (score, content, idx))| (atom_id, score, content, idx))
-            .collect();
-        deduped.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        deduped.truncate(limit as usize);
+        // Sort by BM25 ascending (lower = better) then truncate
+        let mut sorted = filtered;
+        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.truncate(limit as usize);
 
         // Batch fetch atom data
-        let atom_ids: Vec<String> = deduped.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let atom_ids: Vec<String> = sorted.iter().map(|(id, _, _, _)| id.clone()).collect();
         let atom_map = batch_fetch_atoms(&conn, &atom_ids)?;
         let tag_map = batch_fetch_tags(&conn, &atom_ids)?;
 
-        let mut results = Vec::with_capacity(deduped.len());
-        for (atom_id, score, content, chunk_index) in deduped {
+        let mut results = Vec::with_capacity(sorted.len());
+        for (atom_id, bm25_score, snippet, highlighted) in sorted {
             if let Some(atom) = atom_map.get(&atom_id) {
                 let tags = tag_map.get(&atom_id).cloned().unwrap_or_default();
+                let mut offsets = parse_match_offsets(&highlighted);
+                let total = offsets.len() as u32;
+                offsets.truncate(MAX_MATCH_OFFSETS_PER_RESULT);
                 results.push(SemanticSearchResult {
                     atom: AtomWithTags {
                         atom: atom.clone(),
                         tags,
                     },
-                    similarity_score: score,
-                    matching_chunk_content: content,
-                    matching_chunk_index: chunk_index,
+                    similarity_score: normalize_bm25_score(bm25_score),
+                    // Chunk fields aren't meaningful for atom-level search.
+                    matching_chunk_content: String::new(),
+                    matching_chunk_index: 0,
+                    match_snippet: Some(snippet),
+                    match_offsets: Some(offsets),
+                    match_count: Some(total),
                 });
             }
         }
@@ -195,7 +188,7 @@ impl SqliteStorage {
         }
         let fetch_limit = limit * 3;
 
-        let raw_results: Vec<(String, String, String, i32, f64)> =
+        let raw_results: Vec<(String, String, String, i32, f64, String)> =
             fts_search_with_cutoff(&conn, &escaped_query, fetch_limit, created_after)?;
 
         // Apply tag scope filter if specified
@@ -214,12 +207,14 @@ impl SqliteStorage {
             .into_iter()
             .take(limit as usize)
             .map(
-                |(chunk_id, atom_id, content, chunk_index, bm25_score)| ChunkSearchResult {
-                    chunk_id,
-                    atom_id,
-                    content,
-                    chunk_index,
-                    score: normalize_bm25_score(bm25_score),
+                |(chunk_id, atom_id, content, chunk_index, bm25_score, _snippet)| {
+                    ChunkSearchResult {
+                        chunk_id,
+                        atom_id,
+                        content,
+                        chunk_index,
+                        score: normalize_bm25_score(bm25_score),
+                    }
                 },
             )
             .collect();
@@ -435,14 +430,122 @@ impl SearchStore for SqliteStorage {
 
 // ==================== Local Helper Functions ====================
 
+/// Maximum number of match offsets included per search result. Capping here
+/// (rather than on the client) keeps the payload bounded and gives every
+/// consumer — palette, future API users, tests — the same truncated view.
+/// When a result has more matches than this, `SemanticSearchResult.match_count`
+/// / `GlobalWikiSearchResult.match_count` carries the true total so the UI can
+/// still honestly say "37 matches".
+pub(crate) const MAX_MATCH_OFFSETS_PER_RESULT: usize = 10;
+
+/// Walk a `highlight()` result (atom content with `\u{E000}`/`\u{E001}` pairs
+/// wrapping each match) and produce byte-offset ranges into the un-marked text.
+fn parse_match_offsets(highlighted: &str) -> Vec<crate::models::MatchOffset> {
+    const MARK_START: char = '\u{E000}';
+    const MARK_END: char = '\u{E001}';
+    let mut offsets = Vec::new();
+    let mut stripped_pos: u32 = 0;
+    let mut current_start: Option<u32> = None;
+    for ch in highlighted.chars() {
+        if ch == MARK_START {
+            current_start = Some(stripped_pos);
+        } else if ch == MARK_END {
+            if let Some(start) = current_start.take() {
+                offsets.push(crate::models::MatchOffset {
+                    start,
+                    end: stripped_pos,
+                });
+            }
+        } else {
+            stripped_pos += ch.len_utf8() as u32;
+        }
+    }
+    offsets
+}
+
+/// Run the atom-level FTS5 query, returning `(atom_id, bm25_score, snippet,
+/// highlighted_content)` per match. The snippet is windowed around matched
+/// tokens; the highlighted content is the full atom body with markers around
+/// every hit so the caller can extract match offsets.
+fn atom_fts_search_with_cutoff(
+    conn: &rusqlite::Connection,
+    escaped_query: &str,
+    fetch_limit: i32,
+    created_after: Option<&str>,
+) -> Result<Vec<(String, f64, String, String)>, AtomicCoreError> {
+    let row_map = |row: &rusqlite::Row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    };
+    if let Some(cutoff) = created_after {
+        let mut stmt = conn
+            .prepare(
+                "SELECT f.id,
+                        bm25(atoms_fts) AS score,
+                        snippet(atoms_fts, 1, '\u{E000}', '\u{E001}', '…', 20) AS snippet,
+                        highlight(atoms_fts, 1, '\u{E000}', '\u{E001}') AS highlighted
+                 FROM atoms_fts f
+                 INNER JOIN atoms a ON a.rowid = f.rowid
+                 WHERE atoms_fts MATCH ?1 AND a.created_at >= ?2
+                 ORDER BY bm25(atoms_fts)
+                 LIMIT ?3",
+            )
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to prepare atom FTS query: {}", e))
+            })?;
+        let rows: Vec<_> = stmt
+            .query_map(
+                rusqlite::params![escaped_query, cutoff, fetch_limit],
+                row_map,
+            )
+            .map_err(|e| AtomicCoreError::Search(format!("Failed to query atom FTS: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect atom FTS results: {}", e))
+            })?;
+        Ok(rows)
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id,
+                        bm25(atoms_fts) AS score,
+                        snippet(atoms_fts, 1, '\u{E000}', '\u{E001}', '…', 20) AS snippet,
+                        highlight(atoms_fts, 1, '\u{E000}', '\u{E001}') AS highlighted
+                 FROM atoms_fts
+                 WHERE atoms_fts MATCH ?1
+                 ORDER BY bm25(atoms_fts)
+                 LIMIT ?2",
+            )
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to prepare atom FTS query: {}", e))
+            })?;
+        let rows: Vec<_> = stmt
+            .query_map(rusqlite::params![escaped_query, fetch_limit], row_map)
+            .map_err(|e| AtomicCoreError::Search(format!("Failed to query atom FTS: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                AtomicCoreError::Search(format!("Failed to collect atom FTS results: {}", e))
+            })?;
+        Ok(rows)
+    }
+}
+
 /// Run the FTS5 keyword query, optionally constrained to chunks whose parent atom
 /// was created at or after `created_after` (ISO 8601 cutoff).
+///
+/// Each row carries a `snippet` column: a windowed excerpt around the matched
+/// tokens with `\u{E000}`/`\u{E001}` Private Use Area markers wrapping each hit.
+/// The column index `3` refers to the FTS virtual table's `content` column.
 fn fts_search_with_cutoff(
     conn: &rusqlite::Connection,
     escaped_query: &str,
     fetch_limit: i32,
     created_after: Option<&str>,
-) -> Result<Vec<(String, String, String, i32, f64)>, AtomicCoreError> {
+) -> Result<Vec<(String, String, String, i32, f64, String)>, AtomicCoreError> {
     let row_map = |row: &rusqlite::Row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -450,12 +553,15 @@ fn fts_search_with_cutoff(
             row.get::<_, String>(2)?,
             row.get::<_, i32>(3)?,
             row.get::<_, f64>(4)?,
+            row.get::<_, String>(5)?,
         ))
     };
     if let Some(cutoff) = created_after {
         let mut stmt = conn
             .prepare(
-                "SELECT f.id, f.atom_id, f.content, f.chunk_index, bm25(atom_chunks_fts) AS score
+                "SELECT f.id, f.atom_id, f.content, f.chunk_index,
+                        bm25(atom_chunks_fts) AS score,
+                        snippet(atom_chunks_fts, 3, '\u{E000}', '\u{E001}', '…', 20) AS snippet
                  FROM atom_chunks_fts f
                  INNER JOIN atoms a ON a.id = f.atom_id
                  WHERE atom_chunks_fts MATCH ?1 AND a.created_at >= ?2
@@ -477,7 +583,9 @@ fn fts_search_with_cutoff(
     } else {
         let mut stmt = conn
             .prepare(
-                "SELECT id, atom_id, content, chunk_index, bm25(atom_chunks_fts) AS score
+                "SELECT id, atom_id, content, chunk_index,
+                        bm25(atom_chunks_fts) AS score,
+                        snippet(atom_chunks_fts, 3, '\u{E000}', '\u{E001}', '…', 20) AS snippet
                  FROM atom_chunks_fts
                  WHERE atom_chunks_fts MATCH ?1
                  ORDER BY bm25(atom_chunks_fts)
@@ -591,16 +699,20 @@ fn keyword_search_wiki(
     escaped_query: &str,
     limit: i32,
 ) -> Result<Vec<GlobalWikiSearchResult>, AtomicCoreError> {
+    // Column 3 of wiki_articles_fts is `content` (the indexed body).
     let mut stmt = conn
         .prepare(
-            "SELECT id, tag_id, tag_name, content, bm25(wiki_articles_fts) AS score
+            "SELECT id, tag_id, tag_name, content,
+                    bm25(wiki_articles_fts) AS score,
+                    snippet(wiki_articles_fts, 3, '\u{E000}', '\u{E001}', '…', 20) AS snippet,
+                    highlight(wiki_articles_fts, 3, '\u{E000}', '\u{E001}') AS highlighted
              FROM wiki_articles_fts
              WHERE wiki_articles_fts MATCH ?1
              ORDER BY bm25(wiki_articles_fts)
              LIMIT ?2",
         )
         .map_err(|e| AtomicCoreError::Search(format!("Failed to prepare wiki FTS query: {}", e)))?;
-    let rows: Vec<(String, String, String, String, f64)> = stmt
+    let rows: Vec<(String, String, String, String, f64, String, String)> = stmt
         .query_map(rusqlite::params![escaped_query, limit], |row| {
             Ok((
                 row.get(0)?,
@@ -608,6 +720,8 @@ fn keyword_search_wiki(
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })
         .map_err(|e| AtomicCoreError::Search(format!("Failed to query wiki FTS: {}", e)))?
@@ -620,7 +734,7 @@ fn keyword_search_wiki(
 
     let tag_ids: Vec<String> = rows
         .iter()
-        .map(|(_, tag_id, _, _, _)| tag_id.clone())
+        .map(|(_, tag_id, _, _, _, _, _)| tag_id.clone())
         .collect();
     let mut atom_counts = HashMap::new();
     let placeholders = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -648,7 +762,7 @@ fn keyword_search_wiki(
         })?;
 
     let mut results = Vec::with_capacity(rows.len());
-    for (id, tag_id, tag_name, content, score) in rows {
+    for (id, tag_id, tag_name, content, score, fts_snippet, highlighted) in rows {
         let updated_at: Option<String> = updated_stmt
             .query_row([&id], |row| row.get(0))
             .optional()
@@ -659,14 +773,21 @@ fn keyword_search_wiki(
             tracing::warn!(wiki_article_id = %id, tag_id = %tag_id, "Skipping stale wiki FTS row without backing article");
             continue;
         };
+        let mut offsets = parse_match_offsets(&highlighted);
+        let total = offsets.len() as u32;
+        offsets.truncate(MAX_MATCH_OFFSETS_PER_RESULT);
         results.push(GlobalWikiSearchResult {
             id,
             tag_id: tag_id.clone(),
             tag_name,
             content_snippet: snippet(&content, 180),
+            content,
             updated_at,
             atom_count: atom_counts.get(&tag_id).copied().unwrap_or(0),
             score: normalize_bm25_score(score),
+            match_snippet: Some(fts_snippet),
+            match_offsets: Some(offsets),
+            match_count: Some(total),
         });
     }
 

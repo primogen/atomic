@@ -4463,6 +4463,239 @@ mod tests {
         assert!(response.wiki.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_global_search_returns_snippet_and_match_offsets() {
+        let (db, _temp) = create_test_db().await;
+
+        // Content with multiple matches so we can exercise match_offsets count
+        // and confirm the snippet markers wrap the hits.
+        let content = "Alpha beta gamma. Beta is nice. Something about beta again.";
+        db.create_atom(
+            CreateAtomRequest {
+                content: content.to_string(),
+                ..Default::default()
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let response = db.search_global_keyword("beta", 10).await.unwrap();
+        assert_eq!(response.atoms.len(), 1, "expected one atom-level hit");
+
+        let result = &response.atoms[0];
+        let snippet = result
+            .match_snippet
+            .as_ref()
+            .expect("match_snippet should be populated");
+        assert!(
+            snippet.contains('\u{E000}') && snippet.contains('\u{E001}'),
+            "snippet must contain FTS match markers, got: {:?}",
+            snippet
+        );
+
+        let offsets = result
+            .match_offsets
+            .as_ref()
+            .expect("match_offsets should be populated for keyword hits");
+        assert_eq!(offsets.len(), 3, "expected three 'beta' matches");
+        for off in offsets {
+            let slice = &content[off.start as usize..off.end as usize];
+            assert_eq!(
+                slice.to_lowercase(),
+                "beta",
+                "each offset must slice to the matched term"
+            );
+        }
+
+        // Three matches fit under the cap, so the count should match the list.
+        assert_eq!(
+            result.match_count,
+            Some(3),
+            "match_count should carry the true total"
+        );
+
+        // Serialize and confirm the atom's own stored `snippet` is still at the
+        // top level — the FTS excerpt must live under a distinct key so JSON
+        // consumers don't silently lose the saved preview to a duplicated key.
+        let json = serde_json::to_value(result).unwrap();
+        let obj = json.as_object().expect("result serializes as an object");
+        assert!(
+            obj.contains_key("snippet"),
+            "atom preview (Atom.snippet) must be preserved at top level"
+        );
+        assert!(
+            obj.contains_key("match_snippet"),
+            "FTS excerpt must be exposed as match_snippet"
+        );
+        let preview = obj.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            !preview.contains('\u{E000}'),
+            "preview must not accidentally carry FTS markers, got {:?}",
+            preview
+        );
+    }
+
+    #[tokio::test]
+    async fn test_global_search_caps_match_offsets_but_reports_total() {
+        let (db, _temp) = create_test_db().await;
+
+        // 25 occurrences of the token `zeta` — well past the cap of 10.
+        let mut content = String::new();
+        for _ in 0..25 {
+            content.push_str("zeta ");
+        }
+        db.create_atom(
+            CreateAtomRequest {
+                content: content.trim().to_string(),
+                ..Default::default()
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let response = db.search_global_keyword("zeta", 10).await.unwrap();
+        assert_eq!(response.atoms.len(), 1);
+        let result = &response.atoms[0];
+
+        let offsets = result
+            .match_offsets
+            .as_ref()
+            .expect("match_offsets should be populated");
+        assert_eq!(
+            offsets.len(),
+            10,
+            "match_offsets must be capped at MAX_MATCH_OFFSETS_PER_RESULT (10)"
+        );
+        assert_eq!(
+            result.match_count,
+            Some(25),
+            "match_count must carry the true total even when offsets are capped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_global_search_returns_wiki_snippet_and_offsets() {
+        let (db, _temp) = create_test_db().await;
+        let tag = db.create_tag("Zebras", None).await.unwrap();
+
+        // Insert a wiki article directly (mirrors how wiki generation writes).
+        let content =
+            "Zebras are striped. The zebra herd migrates annually. See also: zebra.";
+        let wiki_id = {
+            let sqlite = db.storage.as_sqlite().unwrap();
+            let conn = sqlite.db.conn.lock().unwrap();
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO wiki_articles (id, tag_id, content, atom_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    &id,
+                    &tag.id,
+                    content,
+                    1_i32,
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO wiki_articles_fts (id, tag_id, tag_name, content)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![&id, &tag.id, &tag.name, content],
+            )
+            .unwrap();
+            id
+        };
+
+        let response = db.search_global_keyword("zebra", 10).await.unwrap();
+        assert_eq!(response.wiki.len(), 1, "expected one wiki hit");
+
+        let hit = &response.wiki[0];
+        assert_eq!(hit.id, wiki_id);
+        assert_eq!(hit.content, content, "full content should round-trip");
+        let snip = hit
+            .match_snippet
+            .as_ref()
+            .expect("match_snippet should be populated");
+        assert!(
+            snip.contains('\u{E000}') && snip.contains('\u{E001}'),
+            "wiki snippet must carry FTS markers"
+        );
+
+        let offsets = hit
+            .match_offsets
+            .as_ref()
+            .expect("match_offsets should be populated for keyword hits");
+        // FTS5 phrase-quotes the query, so `zebra` matches whole tokens only —
+        // "Zebras" is a different token and is *not* counted here.
+        assert_eq!(offsets.len(), 2, "expected two 'zebra' matches");
+        for off in offsets {
+            let slice = &content[off.start as usize..off.end as usize];
+            assert_eq!(
+                slice.to_lowercase(),
+                "zebra",
+                "offset should slice to the literal token 'zebra'"
+            );
+        }
+        assert_eq!(
+            hit.match_count,
+            Some(2),
+            "wiki match_count should match the FTS total"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_atoms_fts_stays_in_sync_on_update_and_delete() {
+        let (db, _temp) = create_test_db().await;
+
+        let atom = db
+            .create_atom(
+                CreateAtomRequest {
+                    content: "First version has the marker zebrafish in it".to_string(),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Initial search hits.
+        let hits = db.search_global_keyword("zebrafish", 10).await.unwrap();
+        assert_eq!(hits.atoms.len(), 1);
+
+        // Replace content so the FTS row must be re-synced.
+        db.update_atom(
+            &atom.atom.id,
+            UpdateAtomRequest {
+                content: "Rewritten body without the marker term".to_string(),
+                source_url: None,
+                published_at: None,
+                tag_ids: None,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let hits = db.search_global_keyword("zebrafish", 10).await.unwrap();
+        assert!(
+            hits.atoms.is_empty(),
+            "updated atom should no longer match the old term"
+        );
+        let hits = db.search_global_keyword("rewritten", 10).await.unwrap();
+        assert_eq!(hits.atoms.len(), 1, "new content must be searchable");
+
+        // Delete and confirm the atom drops out of the FTS index.
+        db.delete_atom(&atom.atom.id).await.unwrap();
+        let hits = db.search_global_keyword("rewritten", 10).await.unwrap();
+        assert!(hits.atoms.is_empty(), "deleted atom must not appear");
+    }
+
     // ==================== Atom-Tag Relationship Tests ====================
 
     #[tokio::test]

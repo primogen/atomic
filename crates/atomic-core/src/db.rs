@@ -778,6 +778,37 @@ impl Database {
             )?;
         }
 
+        // FTS5 for atom-level keyword search (powers the search palette).
+        // External content backed by the atoms table; kept in sync manually
+        // from `storage::sqlite::atoms` on insert/update/delete.
+        let atoms_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='atoms_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        let has_atoms_fts = atoms_fts_sql.contains("content='atoms'");
+
+        if !has_atoms_fts {
+            conn.execute_batch("DROP TABLE IF EXISTS atoms_fts")?;
+            conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE atoms_fts USING fts5(
+                    id UNINDEXED,
+                    content,
+                    content='atoms',
+                    content_rowid='rowid'
+                );
+                "#,
+            )?;
+            conn.execute(
+                "INSERT INTO atoms_fts(atoms_fts) VALUES('rebuild')",
+                [],
+            )?;
+        }
+
         let wiki_fts_sql: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='wiki_articles_fts'",

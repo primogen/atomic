@@ -116,6 +116,14 @@ pub struct SimilarAtomResult {
     pub matching_chunk_index: i32,
 }
 
+/// Byte-offset range of a single keyword match in the atom's `content`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MatchOffset {
+    pub start: u32,
+    pub end: u32,
+}
+
 /// Result struct for semantic search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -125,6 +133,23 @@ pub struct SemanticSearchResult {
     pub similarity_score: f32,
     pub matching_chunk_content: String,
     pub matching_chunk_index: i32,
+    /// FTS-windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Named `match_snippet` (not `snippet`) so it
+    /// doesn't collide with the atom's stored preview, which `AtomWithTags`
+    /// flattens into the same JSON object under the `snippet` key. Populated
+    /// for keyword search only; `None` for semantic and hybrid paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_snippet: Option<String>,
+    /// Byte offsets of up to `MAX_MATCH_OFFSETS_PER_RESULT` matches in the
+    /// atom's content, in document order. Populated for keyword search only.
+    /// Capped for payload + UI bounds — consult `match_count` for the true
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
+    /// Total number of matches in the atom's content. May exceed
+    /// `match_offsets.len()` when the offset list was capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<u32>,
 }
 
 /// Grouped keyword search across the app for search palette discovery.
@@ -144,10 +169,29 @@ pub struct GlobalWikiSearchResult {
     pub id: String,
     pub tag_id: String,
     pub tag_name: String,
+    /// Full article body. Sent alongside the result so the palette can build
+    /// per-match windowed snippets (mirrors how atom search exposes content).
+    pub content: String,
+    /// Legacy plain-text prefix. Still populated for clients that don't
+    /// consume `snippet` / `match_offsets`.
     pub content_snippet: String,
     pub updated_at: String,
     pub atom_count: i32,
     pub score: f32,
+    /// FTS5 windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Populated for keyword search. Named
+    /// `match_snippet` for symmetry with `SemanticSearchResult` and to keep
+    /// the distinction from the legacy `content_snippet` explicit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_snippet: Option<String>,
+    /// Byte offsets of up to `MAX_MATCH_OFFSETS_PER_RESULT` matches in the
+    /// article content, in document order. Capped — see `match_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
+    /// Total number of matches in the article. May exceed
+    /// `match_offsets.len()` when the offset list was capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<u32>,
 }
 
 /// Keyword search hit for a chat conversation, collapsed from matching messages.
