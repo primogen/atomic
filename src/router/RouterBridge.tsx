@@ -136,7 +136,7 @@ export function RouterBridge() {
           viewMode: parsed.viewMode,
           selectedTagId: parsed.tagId,
           readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' },
-          wikiReaderState: { tagId: null, tagName: null },
+          wikiReaderState: { tagId: null, tagName: null, highlightText: null },
           overlayNav: { stack: [], index: -1 },
           localGraph: { ...store.localGraph, isOpen: false },
           ...(store.leftPanelOpenBeforeReader
@@ -164,7 +164,7 @@ export function RouterBridge() {
           editing: sameAtom ? store.readerState.editing : false,
           saveStatus: sameAtom ? store.readerState.saveStatus : 'idle',
         },
-        wikiReaderState: { tagId: null, tagName: null },
+        wikiReaderState: { tagId: null, tagName: null, highlightText: null },
         // MainView gives `localGraph.isOpen` priority over reader in its
         // dispatch — close it here or chevron-back from graph leaves the
         // graph visible behind the "new" reader URL.
@@ -178,7 +178,7 @@ export function RouterBridge() {
       useUIStore.setState({
         selectedTagId: parsed.tagId,
         readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' },
-        wikiReaderState: { tagId: null, tagName: null },
+        wikiReaderState: { tagId: null, tagName: null, highlightText: null },
         localGraph: {
           isOpen: true,
           centerAtomId: parsed.atomId,
@@ -191,10 +191,15 @@ export function RouterBridge() {
           : {}),
       });
     } else if (parsed.kind === 'wiki-reader') {
+      // If the URL points to the same tag we're already on, preserve the
+      // incoming highlight so the reader can still scroll to a match.
+      // Navigating to a different wiki clears it.
+      const sameWiki = store.wikiReaderState.tagId === parsed.tagId;
       useUIStore.setState({
         wikiReaderState: {
           tagId: parsed.tagId,
           tagName: parsed.tagName ?? store.wikiReaderState.tagName,
+          highlightText: sameWiki ? store.wikiReaderState.highlightText : null,
         },
         readerState: { atomId: null, highlightText: null, editing: false, saveStatus: 'idle' },
         localGraph: { ...store.localGraph, isOpen: false },

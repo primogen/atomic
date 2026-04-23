@@ -1,16 +1,60 @@
-import { useEffect, useRef } from 'react';
+import { Fragment, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, FileText, Hash, MessageCircle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { BookOpen, ChevronRight, FileText, Hash, MessageCircle } from 'lucide-react';
 import { CommandInput } from '../command-palette/CommandInput';
-import { useSearchPalette } from './useSearchPalette';
+import { byteOffsetsToUtf16, MATCH_SNIPPET_PAD, useSearchPalette } from './useSearchPalette';
+import { MATCH_END, MATCH_START, markdownToPlainText } from './markdownToPlainText';
 import {
   GlobalChatSearchResult,
   GlobalTagSearchResult,
   GlobalWikiSearchResult,
+  MatchOffset,
   SemanticSearchResult,
 } from '../command-palette/types';
+
+function Snippet({ text }: { text: string }) {
+  const segments = useMemo(() => {
+    const plain = markdownToPlainText(text);
+    if (!plain.includes(MATCH_START)) {
+      return [{ text: plain, match: false }];
+    }
+    const out: Array<{ text: string; match: boolean }> = [];
+    let i = 0;
+    while (i < plain.length) {
+      const start = plain.indexOf(MATCH_START, i);
+      if (start === -1) {
+        out.push({ text: plain.slice(i), match: false });
+        break;
+      }
+      if (start > i) {
+        out.push({ text: plain.slice(i, start), match: false });
+      }
+      const end = plain.indexOf(MATCH_END, start + 1);
+      if (end === -1) {
+        // Dangling start marker — drop it and emit the rest as plain text.
+        out.push({ text: plain.slice(start + 1), match: false });
+        break;
+      }
+      out.push({ text: plain.slice(start + 1, end), match: true });
+      i = end + 1;
+    }
+    return out.filter((seg) => seg.text.length > 0);
+  }, [text]);
+
+  return (
+    <div className="mt-1 h-10 overflow-hidden text-xs leading-5 text-[var(--color-text-secondary)]">
+      {segments.map((seg, idx) =>
+        seg.match ? (
+          <strong key={idx} className="font-semibold text-[var(--color-text-primary)]">
+            {seg.text}
+          </strong>
+        ) : (
+          <Fragment key={idx}>{seg.text}</Fragment>
+        ),
+      )}
+    </div>
+  );
+}
 
 interface SearchPaletteProps {
   isOpen: boolean;
@@ -27,42 +71,6 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
   );
 }
 
-function SnippetMarkdown({ content }: { content: string }) {
-  return (
-    <div className="mt-1 h-10 overflow-hidden text-xs leading-5 text-[var(--color-text-secondary)] [&_p]:m-0 [&_p]:inline [&_strong]:font-medium [&_strong]:text-[var(--color-text-primary)] [&_em]:italic [&_code]:rounded [&_code]:bg-[var(--color-bg-main)] [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.95em] [&_del]:opacity-80 [&_ul]:m-0 [&_ol]:m-0 [&_li]:inline [&_li]:list-none [&_h1]:m-0 [&_h2]:m-0 [&_h3]:m-0 [&_h4]:m-0 [&_h5]:m-0 [&_h6]:m-0 [&_h1]:inline [&_h2]:inline [&_h3]:inline [&_h4]:inline [&_h5]:inline [&_h6]:inline [&_blockquote]:m-0 [&_blockquote]:inline [&_pre]:m-0 [&_pre]:inline [&_pre]:bg-transparent">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ children }) => <>{children}</>,
-          img: () => null,
-          hr: () => <> </>,
-          br: () => <> </>,
-          p: ({ children }) => <>{children}</>,
-          li: ({ children }) => <>{children} </>,
-          ul: ({ children }) => <>{children}</>,
-          ol: ({ children }) => <>{children}</>,
-          h1: ({ children }) => <>{children}</>,
-          h2: ({ children }) => <>{children}</>,
-          h3: ({ children }) => <>{children}</>,
-          h4: ({ children }) => <>{children}</>,
-          h5: ({ children }) => <>{children}</>,
-          h6: ({ children }) => <>{children}</>,
-          blockquote: ({ children }) => <>{children}</>,
-          pre: ({ children }) => <>{children}</>,
-          table: ({ children }) => <>{children}</>,
-          thead: ({ children }) => <>{children}</>,
-          tbody: ({ children }) => <>{children}</>,
-          tr: ({ children }) => <>{children} </>,
-          th: ({ children }) => <>{children} </>,
-          td: ({ children }) => <>{children} </>,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
 function PaletteItem({
   selected,
   onClick,
@@ -70,30 +78,52 @@ function PaletteItem({
   title,
   subtitle,
   meta,
+  disclosure,
+  indented,
 }: {
   selected: boolean;
   onClick: () => void;
   icon: React.ReactNode;
-  title: string;
+  title?: string;
   subtitle?: string;
   meta?: string;
+  /** Show a chevron to signal expandability. `null` means not expandable. */
+  disclosure?: 'collapsed' | 'expanded' | null;
+  /** Render the row indented (used for match sub-rows under an atom). */
+  indented?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors ${
+      className={`w-full flex items-start gap-3 py-3 text-left transition-colors ${
+        indented ? 'pl-12 pr-4' : 'px-4'
+      } ${
         selected
           ? 'bg-[var(--color-bg-hover)] border-l-2 border-[var(--color-accent)]'
           : 'border-l-2 border-transparent hover:bg-[var(--color-bg-hover)]'
       }`}
     >
-      <span className="text-[var(--color-text-secondary)] mt-0.5">{icon}</span>
+      {disclosure ? (
+        <span
+          className={`mt-0.5 text-[var(--color-text-tertiary)] transition-transform ${
+            disclosure === 'expanded' ? 'rotate-90' : ''
+          }`}
+          aria-hidden
+        >
+          <ChevronRight className="w-3 h-3" strokeWidth={2.5} />
+        </span>
+      ) : null}
+      {icon ? <span className="text-[var(--color-text-secondary)] mt-0.5">{icon}</span> : null}
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
-          {meta ? <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">{meta}</span> : null}
-        </div>
-        {subtitle ? <SnippetMarkdown content={subtitle} /> : null}
+        {title ? (
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
+            {meta ? (
+              <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">{meta}</span>
+            ) : null}
+          </div>
+        ) : null}
+        {subtitle ? <Snippet text={subtitle} /> : null}
       </div>
     </button>
   );
@@ -102,6 +132,29 @@ function PaletteItem({
 function atomTitle(result: SemanticSearchResult): string {
   const firstLine = result.content.split('\n')[0].trim().replace(/^#+\s*/, '');
   return firstLine || 'Untitled';
+}
+
+/**
+ * Build a snippet string centered on a single match offset, with the match
+ * wrapped in the PUA markers that `Snippet` recognizes for bolding. The
+ * `offset` MUST already be in UTF-16 code units (the caller runs it through
+ * `byteOffsetsToUtf16`); otherwise any non-ASCII character before the match
+ * shifts the bold region to the wrong word.
+ */
+function buildMatchSnippet(content: string, offset: MatchOffset): string {
+  const start = Math.max(0, offset.start - MATCH_SNIPPET_PAD);
+  const end = Math.min(content.length, offset.end + MATCH_SNIPPET_PAD);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < content.length ? '…' : '';
+  return (
+    prefix +
+    content.slice(start, offset.start) +
+    '\u{E000}' +
+    content.slice(offset.start, offset.end) +
+    '\u{E001}' +
+    content.slice(offset.end, end) +
+    suffix
+  );
 }
 
 export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPaletteProps) {
@@ -116,6 +169,8 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
     globalResults,
     hybridAtomResults,
     tagResults,
+    expandedAtomIds,
+    expandedWikiIds,
     handleKeyDown,
     handleSelect,
   } = useSearchPalette({ isOpen, onClose, initialQuery });
@@ -149,44 +204,112 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
 
   const renderAtoms = (results: SemanticSearchResult[]) => {
     if (results.length === 0) return null;
-    const start = runningIndex;
-    runningIndex += results.length;
+    const rows: React.ReactNode[] = [];
+    for (const result of results) {
+      const offsets = result.match_offsets ?? [];
+      const expandable = offsets.length > 1;
+      const expanded = expandable && expandedAtomIds.has(result.id);
+      const headerIdx = runningIndex++;
+      rows.push(
+        <PaletteItem
+          key={`atom-${result.id}`}
+          selected={selectedIndex === headerIdx}
+          onClick={() => handleSelect(headerIdx)}
+          icon={<FileText className="w-4 h-4" strokeWidth={2} />}
+          title={atomTitle(result)}
+          // When expanded, the per-match sub-rows carry the snippets; showing
+          // the header snippet too would just be visual noise.
+          subtitle={expanded ? undefined : result.snippet ?? result.matching_chunk_content}
+          meta={
+            result.match_offsets
+              ? `${result.match_offsets.length} ${
+                  result.match_offsets.length === 1 ? 'match' : 'matches'
+                }`
+              : `${Math.round(result.similarity_score * 100)}%`
+          }
+          disclosure={expandable ? (expanded ? 'expanded' : 'collapsed') : undefined}
+        />,
+      );
+      if (expanded) {
+        // Convert byte offsets to UTF-16 indices so string slicing lines up
+        // with the bold region the user sees, regardless of non-ASCII content.
+        const utf16Offsets = byteOffsetsToUtf16(result.content, offsets);
+        for (let mIdx = 0; mIdx < utf16Offsets.length; mIdx++) {
+          const offset = utf16Offsets[mIdx];
+          const subIdx = runningIndex++;
+          rows.push(
+            <PaletteItem
+              key={`atom-${result.id}-match-${mIdx}`}
+              selected={selectedIndex === subIdx}
+              onClick={() => handleSelect(subIdx)}
+              icon={null}
+              indented
+              subtitle={buildMatchSnippet(result.content, offset)}
+            />,
+          );
+        }
+      }
+    }
     return (
       <div className="mb-2">
         <SectionHeader label="Atoms" count={results.length} />
-        {results.map((result, idx) => (
-          <PaletteItem
-            key={`atom-${result.id}`}
-            selected={selectedIndex === start + idx}
-            onClick={() => handleSelect(start + idx)}
-            icon={<FileText className="w-4 h-4" strokeWidth={2} />}
-            title={atomTitle(result)}
-            subtitle={result.matching_chunk_content}
-            meta={`${Math.round(result.similarity_score * 100)}%`}
-          />
-        ))}
+        {rows}
       </div>
     );
   };
 
   const renderWiki = (results: GlobalWikiSearchResult[]) => {
     if (results.length === 0) return null;
-    const start = runningIndex;
-    runningIndex += results.length;
+    const rows: React.ReactNode[] = [];
+    for (const result of results) {
+      const offsets = result.match_offsets ?? [];
+      const expandable = offsets.length > 1;
+      const expanded = expandable && expandedWikiIds.has(result.id);
+      const headerIdx = runningIndex++;
+      rows.push(
+        <PaletteItem
+          key={`wiki-${result.id}`}
+          selected={selectedIndex === headerIdx}
+          onClick={() => handleSelect(headerIdx)}
+          icon={<BookOpen className="w-4 h-4" strokeWidth={2} />}
+          title={result.tag_name}
+          subtitle={
+            expanded
+              ? undefined
+              : result.snippet ?? result.content_snippet
+          }
+          meta={
+            result.match_offsets
+              ? `${result.match_offsets.length} ${
+                  result.match_offsets.length === 1 ? 'match' : 'matches'
+                }`
+              : `${result.atom_count} atoms`
+          }
+          disclosure={expandable ? (expanded ? 'expanded' : 'collapsed') : undefined}
+        />,
+      );
+      if (expanded) {
+        const utf16Offsets = byteOffsetsToUtf16(result.content, offsets);
+        for (let mIdx = 0; mIdx < utf16Offsets.length; mIdx++) {
+          const offset = utf16Offsets[mIdx];
+          const subIdx = runningIndex++;
+          rows.push(
+            <PaletteItem
+              key={`wiki-${result.id}-match-${mIdx}`}
+              selected={selectedIndex === subIdx}
+              onClick={() => handleSelect(subIdx)}
+              icon={null}
+              indented
+              subtitle={buildMatchSnippet(result.content, offset)}
+            />,
+          );
+        }
+      }
+    }
     return (
       <div className="mb-2">
         <SectionHeader label="Wiki" count={results.length} />
-        {results.map((result, idx) => (
-          <PaletteItem
-            key={`wiki-${result.id}`}
-            selected={selectedIndex === start + idx}
-            onClick={() => handleSelect(start + idx)}
-            icon={<BookOpen className="w-4 h-4" strokeWidth={2} />}
-            title={result.tag_name}
-            subtitle={result.content_snippet}
-            meta={`${result.atom_count} atoms`}
-          />
-        ))}
+        {rows}
       </div>
     );
   };
@@ -310,6 +433,10 @@ export function SearchPalette({ isOpen, onClose, initialQuery = '' }: SearchPale
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">↵</kbd>
               open
+            </span>
+            <span className="flex items-center gap-1">
+              <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">→</kbd>
+              expand matches
             </span>
             <span className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 bg-[var(--color-bg-hover)] rounded">esc</kbd>

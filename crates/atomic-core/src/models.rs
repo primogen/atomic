@@ -116,6 +116,14 @@ pub struct SimilarAtomResult {
     pub matching_chunk_index: i32,
 }
 
+/// Byte-offset range of a single keyword match in the atom's `content`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MatchOffset {
+    pub start: u32,
+    pub end: u32,
+}
+
 /// Result struct for semantic search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -125,6 +133,16 @@ pub struct SemanticSearchResult {
     pub similarity_score: f32,
     pub matching_chunk_content: String,
     pub matching_chunk_index: i32,
+    /// Windowed excerpt around matched terms with `\u{E000}`/`\u{E001}` markers
+    /// wrapping each hit. Populated for keyword search only; `None` for semantic
+    /// and hybrid paths where there is no single literal match to anchor on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// Byte offsets of every match in the atom's content, in document order.
+    /// Populated for keyword search only — consumers use it for match counts
+    /// and cycle-through navigation in the reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
 }
 
 /// Grouped keyword search across the app for search palette discovery.
@@ -144,10 +162,22 @@ pub struct GlobalWikiSearchResult {
     pub id: String,
     pub tag_id: String,
     pub tag_name: String,
+    /// Full article body. Sent alongside the result so the palette can build
+    /// per-match windowed snippets (mirrors how atom search exposes content).
+    pub content: String,
+    /// Legacy plain-text prefix. Still populated for clients that don't
+    /// consume `snippet` / `match_offsets`.
     pub content_snippet: String,
     pub updated_at: String,
     pub atom_count: i32,
     pub score: f32,
+    /// FTS5 windowed excerpt around matched terms with `\u{E000}`/`\u{E001}`
+    /// markers wrapping each hit. Populated for keyword search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// Byte offsets of every match in the article's content, in document order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_offsets: Option<Vec<MatchOffset>>,
 }
 
 /// Keyword search hit for a chat conversation, collapsed from matching messages.

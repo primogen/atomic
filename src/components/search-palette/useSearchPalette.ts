@@ -9,13 +9,19 @@ import {
   GlobalSearchResponse,
   GlobalTagSearchResult,
   GlobalWikiSearchResult,
+  MatchOffset,
   SemanticSearchResult,
 } from '../command-palette/types';
+import { markdownToPlainText } from './markdownToPlainText';
 
 const SEARCH_DEBOUNCE_MS = 250;
 const SECTION_LIMIT = 5;
 const HYBRID_ATOM_LIMIT = 12;
 const HYBRID_ATOM_THRESHOLD = 0.3;
+/** Padding (in bytes/chars) to pull into a per-match snippet on each side. */
+export const MATCH_SNIPPET_PAD = 40;
+/** Padding around a match used as `initialRevealText` when opening the reader. */
+const MATCH_REVEAL_PAD = 30;
 
 type SearchPaletteMode = 'global' | 'tags' | 'atoms-hybrid';
 
@@ -24,9 +30,21 @@ type SearchPalettePrefix =
   | { token: '>'; label: 'atoms' }
   | null;
 
-type SearchPaletteItem =
-  | { kind: 'atom'; result: SemanticSearchResult }
-  | { kind: 'wiki'; result: GlobalWikiSearchResult }
+export type SearchPaletteItem =
+  | { kind: 'atom'; result: SemanticSearchResult; expandable: boolean; expanded: boolean }
+  | {
+      kind: 'atom-match';
+      atom: SemanticSearchResult;
+      matchIndex: number;
+      offset: MatchOffset;
+    }
+  | { kind: 'wiki'; result: GlobalWikiSearchResult; expandable: boolean; expanded: boolean }
+  | {
+      kind: 'wiki-match';
+      wiki: GlobalWikiSearchResult;
+      matchIndex: number;
+      offset: MatchOffset;
+    }
   | { kind: 'chat'; result: GlobalChatSearchResult }
   | { kind: 'tag'; result: GlobalTagSearchResult };
 
@@ -56,9 +74,57 @@ function strongSubstringMatch(haystack: string, needle: string): boolean {
     .some((segment) => segment.includes(needle));
 }
 
+/** UTF-8 byte length of a single Unicode code point. */
+function utf8ByteLength(codePoint: number): number {
+  if (codePoint < 0x80) return 1;
+  if (codePoint < 0x800) return 2;
+  if (codePoint < 0x10000) return 3;
+  return 4;
+}
+
+/**
+ * Backend `match_offsets` are UTF-8 byte offsets into `atom.content`. JS
+ * string slicing uses UTF-16 code units, so any multi-byte character (smart
+ * quote, em dash, accented letter, emoji) before the match causes the bold
+ * region to drift right. This helper walks the content once, converting each
+ * requested byte offset to its corresponding UTF-16 index. Offsets past
+ * end-of-content (shouldn't happen, but guarding) clamp to `content.length`.
+ */
+export function byteOffsetsToUtf16(content: string, offsets: MatchOffset[]): MatchOffset[] {
+  if (offsets.length === 0) return offsets;
+  const maxByte = offsets.reduce((m, o) => Math.max(m, o.end), 0);
+
+  const targets = new Set<number>();
+  for (const o of offsets) {
+    targets.add(o.start);
+    targets.add(o.end);
+  }
+
+  const byteToUtf16 = new Map<number, number>();
+  byteToUtf16.set(0, 0);
+
+  let byteCursor = 0;
+  let utf16Cursor = 0;
+  while (utf16Cursor < content.length && byteCursor < maxByte) {
+    const codePoint = content.codePointAt(utf16Cursor)!;
+    byteCursor += utf8ByteLength(codePoint);
+    utf16Cursor += codePoint > 0xffff ? 2 : 1;
+    if (targets.has(byteCursor)) {
+      byteToUtf16.set(byteCursor, utf16Cursor);
+    }
+  }
+
+  return offsets.map((o) => ({
+    start: byteToUtf16.get(o.start) ?? Math.min(o.start, content.length),
+    end: byteToUtf16.get(o.end) ?? Math.min(o.end, content.length),
+  }));
+}
+
 export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSearchPaletteOptions) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [expandedAtomIds, setExpandedAtomIds] = useState<Set<string>>(() => new Set());
+  const [expandedWikiIds, setExpandedWikiIds] = useState<Set<string>>(() => new Set());
   const [globalResults, setGlobalResults] = useState<GlobalSearchResponse>({
     atoms: [],
     wiki: [],
@@ -75,6 +141,8 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
     if (isOpen) {
       setQuery(initialQuery);
       setSelectedIndex(0);
+      setExpandedAtomIds(new Set());
+      setExpandedWikiIds(new Set());
       setGlobalResults({ atoms: [], wiki: [], chats: [], tags: [] });
       setHybridAtomResults([]);
       setIsSearching(false);
@@ -94,6 +162,11 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
   const searchQuery = prefix ? query.slice(prefix.token.length) : query;
 
   useEffect(() => {
+    // Every query/mode change resets expansion — stale expanded state from a
+    // previous query is never useful and would confuse the selection index.
+    setExpandedAtomIds(new Set());
+    setExpandedWikiIds(new Set());
+
     if (mode !== 'global' && mode !== 'atoms-hybrid') {
       setGlobalResults({ atoms: [], wiki: [], chats: [], tags: [] });
       setHybridAtomResults([]);
@@ -186,19 +259,76 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
       return tagResults.map((result) => ({ kind: 'tag', result }));
     }
 
+    const expandAtomRow = (result: SemanticSearchResult): SearchPaletteItem[] => {
+      const offsets = result.match_offsets ?? [];
+      const expandable = offsets.length > 1;
+      const expanded = expandable && expandedAtomIds.has(result.id);
+      const header: SearchPaletteItem = {
+        kind: 'atom',
+        result,
+        expandable,
+        expanded,
+      };
+      if (!expanded) return [header];
+      // Convert the backend's UTF-8 byte offsets into UTF-16 indices usable
+      // with `content.slice`. Only done on expansion so the cost is paid at
+      // most once per atom, only when the user drills in.
+      const utf16Offsets = byteOffsetsToUtf16(result.content, offsets);
+      const subRows: SearchPaletteItem[] = utf16Offsets.map((offset, matchIndex) => ({
+        kind: 'atom-match',
+        atom: result,
+        matchIndex,
+        offset,
+      }));
+      return [header, ...subRows];
+    };
+
+    const expandWikiRow = (result: GlobalWikiSearchResult): SearchPaletteItem[] => {
+      const offsets = result.match_offsets ?? [];
+      const expandable = offsets.length > 1;
+      const expanded = expandable && expandedWikiIds.has(result.id);
+      const header: SearchPaletteItem = {
+        kind: 'wiki',
+        result,
+        expandable,
+        expanded,
+      };
+      if (!expanded) return [header];
+      const utf16Offsets = byteOffsetsToUtf16(result.content, offsets);
+      const subRows: SearchPaletteItem[] = utf16Offsets.map((offset, matchIndex) => ({
+        kind: 'wiki-match',
+        wiki: result,
+        matchIndex,
+        offset,
+      }));
+      return [header, ...subRows];
+    };
+
     if (mode === 'atoms-hybrid') {
-      return hybridAtomResults.map((result) => ({ kind: 'atom' as const, result }));
+      return hybridAtomResults.flatMap(expandAtomRow);
     }
 
     return [
-      ...globalResults.atoms.map((result) => ({ kind: 'atom' as const, result })),
-      ...globalResults.wiki.map((result) => ({ kind: 'wiki' as const, result })),
+      ...globalResults.atoms.flatMap(expandAtomRow),
+      ...globalResults.wiki.flatMap(expandWikiRow),
       ...globalResults.chats.map((result) => ({ kind: 'chat' as const, result })),
       ...globalResults.tags.map((result) => ({ kind: 'tag' as const, result })),
     ];
-  }, [mode, globalResults, hybridAtomResults, tagResults]);
+  }, [mode, globalResults, hybridAtomResults, tagResults, expandedAtomIds, expandedWikiIds]);
 
   const totalItems = flatItems.length;
+
+  // Keep selectedIndex in range when the flat list shrinks (e.g., on collapse
+  // or when a new search returns fewer results than the prior cursor offset).
+  useEffect(() => {
+    if (totalItems === 0) {
+      if (selectedIndex !== 0) setSelectedIndex(0);
+      return;
+    }
+    if (selectedIndex >= totalItems) {
+      setSelectedIndex(totalItems - 1);
+    }
+  }, [totalItems, selectedIndex]);
 
   const handleSelect = useCallback(
     (index: number) => {
@@ -208,15 +338,52 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
       onClose();
 
       switch (item.kind) {
-        case 'atom':
-          useUIStore.getState().openReader(
-            item.result.id,
-            item.result.matching_chunk_content || searchQuery.trim()
-          );
+        case 'atom': {
+          // Keyword-mode hits have a precise match, so highlight just the
+          // query itself. Semantic/hybrid hits have no literal anchor, so
+          // fall back to the matching chunk for approximate reveal.
+          const trimmedQuery = searchQuery.trim();
+          const highlight =
+            mode === 'atoms-hybrid'
+              ? item.result.matching_chunk_content || trimmedQuery
+              : trimmedQuery || item.result.matching_chunk_content;
+          useUIStore.getState().openReader(item.result.id, highlight);
           break;
-        case 'wiki':
-          useUIStore.getState().openWikiReader(item.result.tag_id, item.result.tag_name);
+        }
+        case 'atom-match': {
+          // Pass a unique surrounding window as the reveal text so the editor's
+          // initialRevealText substring search lands on *this* specific match
+          // rather than the first occurrence of the bare query.
+          const { content } = item.atom;
+          const start = Math.max(0, item.offset.start - MATCH_REVEAL_PAD);
+          const end = Math.min(content.length, item.offset.end + MATCH_REVEAL_PAD);
+          const window = content.slice(start, end);
+          useUIStore.getState().openReader(item.atom.id, window);
           break;
+        }
+        case 'wiki': {
+          const trimmedQuery = searchQuery.trim();
+          const highlight = trimmedQuery || undefined;
+          useUIStore
+            .getState()
+            .openWikiReader(item.result.tag_id, item.result.tag_name, highlight);
+          break;
+        }
+        case 'wiki-match': {
+          // The wiki reader renders markdown to plaintext, so pass a
+          // markdown-stripped window (not the raw source slice) — otherwise
+          // the reader's substring search won't find syntax like `[link](url)`
+          // that doesn't survive rendering.
+          const { content } = item.wiki;
+          const start = Math.max(0, item.offset.start - MATCH_REVEAL_PAD);
+          const end = Math.min(content.length, item.offset.end + MATCH_REVEAL_PAD);
+          const rawWindow = content.slice(start, end);
+          const highlight = markdownToPlainText(rawWindow) || rawWindow;
+          useUIStore
+            .getState()
+            .openWikiReader(item.wiki.tag_id, item.wiki.tag_name, highlight);
+          break;
+        }
         case 'chat':
           useUIStore.getState().openChatSidebar(undefined, item.result.id);
           void useChatStore.getState().openConversation(item.result.id);
@@ -253,6 +420,70 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
           e.preventDefault();
           setSelectedIndex((prev) => Math.max(prev - 1, 0));
           break;
+        case 'ArrowRight': {
+          const item = flatItems[selectedIndex];
+          if (!item) break;
+          if (item.kind === 'atom' && item.expandable && !item.expanded) {
+            e.preventDefault();
+            setExpandedAtomIds((prev) => {
+              const next = new Set(prev);
+              next.add(item.result.id);
+              return next;
+            });
+          } else if (item.kind === 'wiki' && item.expandable && !item.expanded) {
+            e.preventDefault();
+            setExpandedWikiIds((prev) => {
+              const next = new Set(prev);
+              next.add(item.result.id);
+              return next;
+            });
+          }
+          break;
+        }
+        case 'ArrowLeft': {
+          const item = flatItems[selectedIndex];
+          if (!item) break;
+          if (item.kind === 'atom-match') {
+            e.preventDefault();
+            const parentId = item.atom.id;
+            const parentIdx = flatItems.findIndex(
+              (it) => it.kind === 'atom' && it.result.id === parentId,
+            );
+            setExpandedAtomIds((prev) => {
+              const next = new Set(prev);
+              next.delete(parentId);
+              return next;
+            });
+            if (parentIdx >= 0) setSelectedIndex(parentIdx);
+          } else if (item.kind === 'wiki-match') {
+            e.preventDefault();
+            const parentId = item.wiki.id;
+            const parentIdx = flatItems.findIndex(
+              (it) => it.kind === 'wiki' && it.result.id === parentId,
+            );
+            setExpandedWikiIds((prev) => {
+              const next = new Set(prev);
+              next.delete(parentId);
+              return next;
+            });
+            if (parentIdx >= 0) setSelectedIndex(parentIdx);
+          } else if (item.kind === 'atom' && item.expanded) {
+            e.preventDefault();
+            setExpandedAtomIds((prev) => {
+              const next = new Set(prev);
+              next.delete(item.result.id);
+              return next;
+            });
+          } else if (item.kind === 'wiki' && item.expanded) {
+            e.preventDefault();
+            setExpandedWikiIds((prev) => {
+              const next = new Set(prev);
+              next.delete(item.result.id);
+              return next;
+            });
+          }
+          break;
+        }
         case 'Enter':
           e.preventDefault();
           handleSelect(selectedIndex);
@@ -263,7 +494,7 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
           break;
       }
     },
-    [selectedIndex, totalItems, handleSelect, onClose]
+    [selectedIndex, totalItems, flatItems, handleSelect, onClose]
   );
 
   return {
@@ -277,6 +508,8 @@ export function useSearchPalette({ isOpen, onClose, initialQuery = '' }: UseSear
     globalResults,
     hybridAtomResults,
     tagResults,
+    expandedAtomIds,
+    expandedWikiIds,
     handleKeyDown,
     handleSelect,
   };

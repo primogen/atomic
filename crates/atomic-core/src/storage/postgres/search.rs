@@ -159,6 +159,8 @@ impl SearchStore for PostgresStorage {
                     similarity_score: similarity,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
+                    snippet: None,
+                    match_offsets: None,
                 });
             }
         }
@@ -276,6 +278,8 @@ impl SearchStore for PostgresStorage {
                     similarity_score: score,
                     matching_chunk_content: content,
                     matching_chunk_index: chunk_index,
+                    snippet: None,
+                    match_offsets: None,
                 });
             }
         }
@@ -726,9 +730,12 @@ async fn pg_keyword_search_wiki(
                     tag_id,
                     tag_name,
                     content_snippet: pg_snippet(&content, 180),
+                    content,
                     updated_at,
                     atom_count,
                     score: score.clamp(0.0, 1.0),
+                    snippet: None,
+                    match_offsets: None,
                 }
             },
         )

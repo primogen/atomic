@@ -254,6 +254,8 @@ pub async fn search_atoms_with_settings(
                 similarity_score: chunk.score,
                 matching_chunk_content: chunk.content,
                 matching_chunk_index: chunk.chunk_index,
+                snippet: None,
+                match_offsets: None,
             });
         }
     }
