@@ -34,8 +34,6 @@ export function normalizeServerEvent(data: Record<string, unknown>): NormalizedE
       return { event: 'atom-created', payload: data.atom };
     case 'AtomUpdated':
       return { event: 'atom-updated', payload: data.atom };
-    case 'AtomChanged':
-      return { event: 'atom-changed', payload: data.atom };
     case 'EmbeddingsReset':
       return { event: 'embeddings-reset', payload: data };
     case 'ImportProgress':

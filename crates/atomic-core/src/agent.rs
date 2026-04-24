@@ -5,6 +5,7 @@
 //! Uses a callback-based event system (same pattern as EmbeddingEvent).
 
 use crate::chunking::count_tokens;
+use crate::embedding::EmbeddingEvent;
 use crate::models::{
     AtomWithTags, ChatCitation, ChatMessage, ChatMessageWithContext, ChatToolCall,
     SemanticSearchResult,
@@ -21,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+type ChatEventCallback = Arc<dyn Fn(ChatEvent) + Send + Sync + 'static>;
 
 // ==================== Chat Events ====================
 
@@ -67,6 +70,11 @@ pub enum ChatEvent {
     AtomUpdated {
         conversation_id: String,
         atom: AtomWithTags,
+    },
+    /// Embedding/tagging pipeline event for an atom mutated by a chat tool
+    AtomPipelineEvent {
+        conversation_id: String,
+        event: EmbeddingEvent,
     },
     /// Error during chat
     Error {
@@ -557,6 +565,7 @@ async fn execute_create_atom(
     tool_args: &serde_json::Value,
     external_settings: Option<std::collections::HashMap<String, String>>,
     canvas_cache: Option<&crate::CanvasCache>,
+    on_embedding_event: Arc<dyn Fn(EmbeddingEvent) + Send + Sync + 'static>,
 ) -> Result<AtomWithTags, String> {
     let content = tool_args["content"].as_str().unwrap_or("").to_string();
     if content.trim().is_empty() {
@@ -585,7 +594,7 @@ async fn execute_create_atom(
         storage.clone(),
         id,
         content,
-        |_| {},
+        move |event| on_embedding_event(event),
         external_settings,
     );
 
@@ -597,6 +606,7 @@ async fn execute_update_atom(
     tool_args: &serde_json::Value,
     external_settings: Option<std::collections::HashMap<String, String>>,
     canvas_cache: Option<&crate::CanvasCache>,
+    on_embedding_event: Arc<dyn Fn(EmbeddingEvent) + Send + Sync + 'static>,
 ) -> Result<Option<AtomWithTags>, String> {
     let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
     let Some(existing) = storage
@@ -645,7 +655,7 @@ async fn execute_update_atom(
         storage.clone(),
         atom_id.to_string(),
         content,
-        |_| {},
+        move |event| on_embedding_event(event),
         external_settings,
     );
 
@@ -731,6 +741,7 @@ async fn execute_edit_atom(
     tool_args: &serde_json::Value,
     external_settings: Option<std::collections::HashMap<String, String>>,
     canvas_cache: Option<&crate::CanvasCache>,
+    on_embedding_event: Arc<dyn Fn(EmbeddingEvent) + Send + Sync + 'static>,
 ) -> Result<Option<AtomWithTags>, String> {
     let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
     let Some(existing) = storage
@@ -776,7 +787,7 @@ async fn execute_edit_atom(
         storage.clone(),
         atom_id.to_string(),
         content,
-        |_| {},
+        move |event| on_embedding_event(event),
         external_settings,
     );
 
@@ -966,8 +977,8 @@ struct AgentContext {
     tool_calls_record: Vec<ChatToolCall>,
 }
 
-async fn run_agent_loop<F>(
-    on_event: &F,
+async fn run_agent_loop(
+    on_event: ChatEventCallback,
     storage: StorageBackend,
     provider_config: ProviderConfig,
     model: String,
@@ -976,10 +987,7 @@ async fn run_agent_loop<F>(
     page_context: Option<&PageContext>,
     canvas_context: Option<&CanvasContext>,
     canvas_cache: Option<&crate::CanvasCache>,
-) -> Result<ChatMessageWithContext, String>
-where
-    F: Fn(ChatEvent) + Send + Sync,
-{
+) -> Result<ChatMessageWithContext, String> {
     let provider = create_streaming_llm_provider(&provider_config)
         .map_err(|e| format!("Failed to create streaming provider: {}", e))?;
     let mut tools = get_tools();
@@ -989,6 +997,16 @@ where
     if canvas_context.is_some() {
         tools.extend(get_canvas_tools());
     }
+    let on_embedding_event: Arc<dyn Fn(EmbeddingEvent) + Send + Sync + 'static> = {
+        let on_event = Arc::clone(&on_event);
+        let conversation_id = ctx.conversation_id.clone();
+        Arc::new(move |event| {
+            on_event(ChatEvent::AtomPipelineEvent {
+                conversation_id: conversation_id.clone(),
+                event,
+            });
+        })
+    };
     let max_iterations = 10;
 
     for _iteration in 0..max_iterations {
@@ -1188,6 +1206,7 @@ where
                             &tool_args,
                             external_settings.clone(),
                             canvas_cache,
+                            Arc::clone(&on_embedding_event),
                         )
                         .await
                         {
@@ -1221,6 +1240,7 @@ where
                             &tool_args,
                             external_settings.clone(),
                             canvas_cache,
+                            Arc::clone(&on_embedding_event),
                         )
                         .await
                         {
@@ -1255,6 +1275,7 @@ where
                             &tool_args,
                             external_settings.clone(),
                             canvas_cache,
+                            Arc::clone(&on_embedding_event),
                         )
                         .await
                         {
@@ -1380,7 +1401,7 @@ pub async fn send_chat_message<F>(
     on_event: F,
 ) -> Result<ChatMessageWithContext, String>
 where
-    F: Fn(ChatEvent) + Send + Sync,
+    F: Fn(ChatEvent) + Send + Sync + 'static,
 {
     send_chat_message_with_settings(storage, conversation_id, content, on_event, None).await
 }
@@ -1394,8 +1415,10 @@ pub async fn send_chat_message_with_settings<F>(
     external_settings: Option<std::collections::HashMap<String, String>>,
 ) -> Result<ChatMessageWithContext, String>
 where
-    F: Fn(ChatEvent) + Send + Sync,
+    F: Fn(ChatEvent) + Send + Sync + 'static,
 {
+    let on_event: ChatEventCallback = Arc::new(on_event);
+
     // Resolve settings (from registry if provided, otherwise from storage)
     let settings_map = match external_settings {
         Some(s) => s,
@@ -1476,7 +1499,7 @@ where
 
     // Run agent loop (storage is Clone, so no separate connection needed)
     let mut result = run_agent_loop(
-        &on_event,
+        Arc::clone(&on_event),
         storage.clone(),
         provider_config,
         model,
@@ -1596,8 +1619,10 @@ pub async fn send_chat_message_with_canvas<F>(
     canvas_cache: Option<crate::CanvasCache>,
 ) -> Result<ChatMessageWithContext, String>
 where
-    F: Fn(ChatEvent) + Send + Sync,
+    F: Fn(ChatEvent) + Send + Sync + 'static,
 {
+    let on_event: ChatEventCallback = Arc::new(on_event);
+
     // Resolve settings (from registry if provided, otherwise from storage)
     let settings_map = match external_settings {
         Some(s) => s,
@@ -1685,7 +1710,7 @@ where
 
     // Run agent loop with canvas context
     let mut result = run_agent_loop(
-        &on_event,
+        Arc::clone(&on_event),
         storage.clone(),
         provider_config,
         model,

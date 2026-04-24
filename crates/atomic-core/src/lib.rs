@@ -2109,7 +2109,7 @@ impl AtomicCore {
         on_event: F,
     ) -> Result<ChatMessageWithContext, AtomicCoreError>
     where
-        F: Fn(ChatEvent) + Send + Sync,
+        F: Fn(ChatEvent) + Send + Sync + 'static,
     {
         agent::send_chat_message_with_settings(
             self.storage.clone(),
@@ -2132,7 +2132,7 @@ impl AtomicCore {
         page_context: Option<PageContext>,
     ) -> Result<ChatMessageWithContext, AtomicCoreError>
     where
-        F: Fn(ChatEvent) + Send + Sync,
+        F: Fn(ChatEvent) + Send + Sync + 'static,
     {
         agent::send_chat_message_with_canvas(
             self.storage.clone(),
